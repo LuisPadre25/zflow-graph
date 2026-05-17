@@ -77,11 +77,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/luisg/zflow-graph"
+    "url": "https://github.com/LuisPadre25/zflow-graph"
   },
-  "homepage": "https://github.com/luisg/zflow-graph#readme",
+  "homepage": "https://github.com/LuisPadre25/zflow-graph#readme",
   "bugs": {
-    "url": "https://github.com/luisg/zflow-graph/issues"
+    "url": "https://github.com/LuisPadre25/zflow-graph/issues"
   },
   "engines": {
     "node": ">=18"
