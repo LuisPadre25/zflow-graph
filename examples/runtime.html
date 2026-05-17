@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · runtime (graph execution)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 14px; left: 14px; width: 320px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 10px; padding: 14px 16px;
+             backdrop-filter: blur(10px); z-index: 100; font-size: 12.5px; line-height: 1.5; }
+    #panel h3 { margin: 0 0 8px; color: #f0b93a; font-size: 13px;
+                text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 0 0 10px; color: #8b95a7; }
+    #panel kbd { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 3px;
+                 color: #f0b93a; font: 600 11px ui-monospace, Consolas, monospace; }
+    #panel button { background: #f0b93a; color: #0b0f17; border: 0;
+                    padding: 7px 14px; border-radius: 5px; cursor: pointer;
+                    font-weight: 700; font-size: 12px; margin-right: 6px; }
+    #panel button.sec { background: rgba(255,255,255,0.08); color: #e6edf3; }
+    #panel button:hover { filter: brightness(1.1); }
+    #log { position: fixed; right: 14px; top: 14px; width: 360px; height: 360px;
+           background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+           border-radius: 10px; padding: 10px; overflow: auto; font: 11.5px ui-monospace, Consolas, monospace;
+           color: #c8d1de; z-index: 100; backdrop-filter: blur(10px); }
+    #log .ok { color: #5bd17a; }
+    #log .err { color: #e8462b; }
+    #log .start { color: #f0b93a; }
+    #log .emit { color: #5b8def; }
+    #log .name { color: #8b95a7; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h3>graph runtime</h3>
+    <p>Each kind has an <code>execute(ctx, ins)</code> hook. Click <strong>Run</strong> to evaluate the graph in topological order. Outputs flow through edges. Status, progress and sparkline update live.</p>
+    <p><kbd>F5</kbd> run · <kbd>Shift+F5</kbd> stop · or use the command palette <kbd>Ctrl+K</kbd>.</p>
+    <button id="run">Run once</button>
+    <button id="loop" class="sec">Loop @ 600ms</button>
+    <button id="stop" class="sec">Stop</button>
+    <button id="reset" class="sec">Reset</button>
+    <p style="margin-top:10px;color:#5be0d0;">Try editing the multiplier value live — the loop picks it up on the next tick.</p>
+  </div>
+  <div id="log"></div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+      minimap: true,
+    });
+    window.flow = flow;   // available in DevTools console
+
+    const log = document.getElementById('log');
+    const pushLog = (cls, msg) => {
+      log.insertAdjacentHTML('beforeend', `<div class="${cls}">${msg}</div>`);
+      log.scrollTop = log.scrollHeight;
+    };
+
+    // ── Register executable kinds ────────────────────────────────────────
+    let mult = 2;
+    flow.registerKind({
+      name: 'source', color: '#5b8def', badge: 'S', w: 160, h: 64, nin: 0, nout: 1,
+      execute: () => ({ value: Math.round(50 + Math.random() * 50 + Math.sin(Date.now() / 800) * 30) }),
+    });
+    flow.registerKind({
+      name: 'multiply', color: '#e8b04b', badge: '×', w: 160, h: 64, nin: 1, nout: 1,
+      execute: (ctx, ins) => ({ value: (ins.value ?? ins[0] ?? 0) * mult }),
+    });
+    flow.registerKind({
+      name: 'delay', color: '#c062e8', badge: 'τ', w: 160, h: 64, nin: 1, nout: 1,
+      execute: async (ctx, ins) => {
+        for (let p = 0; p <= 1; p += 0.2) { if (ctx.signal.aborted) return; ctx.setProgress(p); await new Promise((r) => setTimeout(r, 40)); }
+        return { value: (ins.value ?? ins[0] ?? 0) };
+      },
+    });
+    flow.registerKind({
+      name: 'threshold', color: '#5be0d0', badge: 'Θ', w: 160, h: 64, nin: 1, nout: 2,
+      portOut: ['ok', 'bad'],
+      execute: (ctx, ins) => {
+        const v = ins.value ?? ins[0] ?? 0;
+        return v > 120 ? { ok: v } : { bad: v };
+      },
+    });
+    flow.registerKind({
+      name: 'sink', color: '#5bd17a', badge: '⌧', w: 160, h: 64, nin: 1, nout: 0,
+      execute: (ctx, ins) => {
+        const v = ins.value ?? ins.ok ?? ins.bad ?? ins[0];
+        ctx.log('sink got', v);
+        return { received: v };
+      },
+    });
+    flow.registerKind({
+      name: 'alarm', color: '#e8462b', badge: '!', w: 160, h: 64, nin: 1, nout: 0,
+      execute: (ctx, ins) => { ctx.log('alarm', ins.bad ?? ins[0]); return { alarm: true }; },
+    });
+
+    // ── Build the pipeline ──────────────────────────────────────────────
+    const src = flow.addNode({ kind: 'source',    x: -520, y:    0, title: 'Random source' });
+    const mul = flow.addNode({ kind: 'multiply',  x: -260, y:    0, title: '× 2' });
+    const dly = flow.addNode({ kind: 'delay',     x:    0, y:    0, title: 'delay 200ms' });
+    const thr = flow.addNode({ kind: 'threshold', x:  260, y:    0, title: 'gt 120?', portOut: ['ok', 'bad'] });
+    const ok  = flow.addNode({ kind: 'sink',      x:  520, y:  -90, title: 'good values' });
+    const bad = flow.addNode({ kind: 'alarm',     x:  520, y:   90, title: 'alarm' });
+
+    flow.addEdge({ from: src, to: mul });
+    flow.addEdge({ from: mul, to: dly });
+    flow.addEdge({ from: dly, to: thr });
+    flow.addEdge({ from: thr, fp: 0, to: ok });
+    flow.addEdge({ from: thr, fp: 1, to: bad });
+
+    flow.setAllEdgesAnimated(true);
+    flow.runAutoLayout();
+    flow.fitView();
+
+    // ── Wire runtime events to the side log ──────────────────────────────
+    flow.on('run:start',  () => pushLog('start',  `▸ run started · order = [${flow._runOrder.join(', ')}]`));
+    flow.on('run:done',   (r) => pushLog('ok',    `✓ run done · ${r.executed} nodes${r.errors.length ? ` · ${r.errors.length} errors` : ''}`));
+    flow.on('node:done',  (e) => pushLog('emit',  `  └ <span class="name">node ${e.id}</span> → ${JSON.stringify(e.outputs)}`));
+    flow.on('node:error', (e) => pushLog('err',   `  ⚠ node ${e.id}: ${e.error.message}`));
+    flow.on('node:log',   (e) => pushLog('name',  `  ◦ node ${e.id} log: ${e.args.join(' ')}`));
+
+    // ── Buttons ──────────────────────────────────────────────────────────
+    document.getElementById('run').onclick   = () => flow.run();
+    document.getElementById('loop').onclick  = () => flow.startLoop(600);
+    document.getElementById('stop').onclick  = () => { flow.stopLoop(); flow.stop(); };
+    document.getElementById('reset').onclick = () => { flow.clearRuntimeState(); log.innerHTML = ''; };
+
+    // ── Double-click multiplier node to change the factor live ───────────
+    flow.on('node:dblclick', (id) => {
+      if (id === mul) {
+        const v = prompt('multiplier?', String(mult));
+        if (v !== null) {
+          mult = parseFloat(v) || 1;
+          flow.setNodeTitle(mul, `× ${mult}`);
+        }
+      }
+    });
+  </script>
+</body>
+</html>

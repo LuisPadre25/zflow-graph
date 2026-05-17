@@ -1,0 +1,100 @@
+{
+  "name": "@luispm/zflow-graph",
+  "version": "0.1.0",
+  "description": "WASM-powered node-edge graph editor + runtime. No framework. 100k nodes at 60fps. Built-in execution engine, Yjs multiplayer, WebGL renderer.",
+  "type": "module",
+  "main": "./dist/zflow.umd.js",
+  "module": "./dist/zflow.esm.js",
+  "browser": "./dist/zflow.umd.min.js",
+  "unpkg": "./dist/zflow.umd.min.js",
+  "jsdelivr": "./dist/zflow.umd.min.js",
+  "exports": {
+    ".": {
+      "import": "./dist/zflow.esm.js",
+      "require": "./dist/zflow.umd.js",
+      "default": "./dist/zflow.esm.js"
+    },
+    "./webgl": {
+      "import": "./dist/webgl-renderer.esm.js",
+      "require": "./dist/webgl-renderer.umd.js"
+    },
+    "./adapters/yjs": {
+      "import": "./dist/adapters/yjs.esm.js",
+      "require": "./dist/adapters/yjs.umd.js"
+    },
+    "./wasm": "./dist/zflow.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/zflow.esm.js",
+    "dist/zflow.esm.js.map",
+    "dist/zflow.esm.min.js",
+    "dist/zflow.esm.min.js.map",
+    "dist/zflow.umd.js",
+    "dist/zflow.umd.js.map",
+    "dist/zflow.umd.min.js",
+    "dist/zflow.umd.min.js.map",
+    "dist/zflow.wasm",
+    "dist/webgl-renderer.esm.js",
+    "dist/webgl-renderer.esm.min.js",
+    "dist/webgl-renderer.umd.js",
+    "dist/adapters/yjs.esm.js",
+    "dist/adapters/yjs.esm.min.js",
+    "dist/adapters/yjs.umd.js",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "docs/"
+  ],
+  "scripts": {
+    "build:wasm": "zig build",
+    "build:js": "rollup -c",
+    "build": "npm run build:wasm && npm run build:js",
+    "dev": "rollup -c -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run test && npm run build",
+    "serve": "python -m http.server 8765"
+  },
+  "keywords": [
+    "graph",
+    "editor",
+    "node",
+    "edge",
+    "diagram",
+    "flowchart",
+    "react-flow-alternative",
+    "wasm",
+    "webgl",
+    "visual-programming",
+    "no-code",
+    "workflow",
+    "canvas",
+    "interactive"
+  ],
+  "author": "Luis G. <luis.padre21@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luisg/zflow-graph"
+  },
+  "homepage": "https://github.com/luisg/zflow-graph#readme",
+  "bugs": {
+    "url": "https://github.com/luisg/zflow-graph/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "devDependencies": {
+    "@rollup/plugin-terser": "^0.4.4",
+    "@vitest/coverage-v8": "^1.6.0",
+    "jsdom": "^24.0.0",
+    "rollup": "^4.18.0",
+    "vitest": "^1.6.0"
+  },
+  "peerDependenciesMeta": {
+    "yjs": { "optional": true }
+  }
+}

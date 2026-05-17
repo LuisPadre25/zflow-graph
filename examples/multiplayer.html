@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · multiplayer (Yjs)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 14px; left: 14px; width: 340px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(10px);
+             z-index: 100; font-size: 12.5px; line-height: 1.5; }
+    #panel h3 { margin: 0 0 8px; color: #f0b93a; font-size: 13px;
+                text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 4px 0; color: #8b95a7; }
+    #panel button { background: #f0b93a; color: #0b0f17; border: 0;
+                    padding: 6px 12px; border-radius: 5px; cursor: pointer;
+                    font-weight: 700; font-size: 12px; margin: 4px 4px 0 0; }
+    #panel .me { color: var(--me-color, #5be0d0); font-weight: 700; }
+    #room { padding: 4px 8px; background: rgba(255,255,255,0.06); border-radius: 4px;
+            font-family: ui-monospace, Consolas, monospace; color: #f0b93a; font-size: 11px; }
+    #peers { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.10); }
+    .peer { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px;
+            background: rgba(255,255,255,0.06); font-size: 11px; margin: 2px 4px 2px 0; }
+    .peer .dot { width: 8px; height: 8px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h3>multiplayer demo</h3>
+    <p>Sala: <span id="room"></span></p>
+    <p>Tú eres: <span class="me" id="me">…</span></p>
+    <p style="margin-top:8px;color:#5be0d0;">Abre <strong>esta misma página en otra pestaña</strong> (Ctrl+T). Los nodos y aristas se sincronizan en tiempo real vía Y.Doc y un servidor público de Yjs.</p>
+    <button id="add">Add node</button>
+    <button id="link" class="sec">Connect last 2</button>
+    <button id="layout">Auto-layout</button>
+    <div id="peers">peers: <span id="peerlist"></span></div>
+  </div>
+  <script type="module">
+    import * as Y from 'https://esm.sh/yjs@13';
+    import { WebsocketProvider } from 'https://esm.sh/y-websocket@2';
+    import { ZFlow } from '../src/zflow.js';
+    import { bindYjs } from '../src/adapters/yjs.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+      minimap: true,
+    });
+    window.flow = flow;
+
+    // Pick (or generate) a stable user identity for this tab.
+    let userName = sessionStorage.getItem('zf-name');
+    if (!userName) { userName = 'guest-' + Math.random().toString(36).slice(2, 5); sessionStorage.setItem('zf-name', userName); }
+    const palette = ['#5b8def','#c062e8','#5bd17a','#f0b93a','#5be0d0','#fb923c','#e8462b'];
+    const color = palette[userName.charCodeAt(0) % palette.length];
+
+    document.getElementById('me').textContent = userName;
+    document.documentElement.style.setProperty('--me-color', color);
+
+    // Open the Y.Doc + WebSocket connection.
+    const ROOM = 'zflow-demo-' + (location.hash || '#default').slice(1);
+    document.getElementById('room').textContent = ROOM;
+    const ydoc = new Y.Doc();
+    const provider = new WebsocketProvider('wss://demos.yjs.dev/ws', ROOM, ydoc);
+
+    // Bind ZFlow ↔ Y.Doc.
+    bindYjs(flow, ydoc, { userId: userName, userName, color, awareness: provider.awareness });
+
+    // Peer list UI.
+    const peerEl = document.getElementById('peerlist');
+    const renderPeers = () => {
+      const states = provider.awareness.getStates();
+      const html = [];
+      for (const [cid, state] of states) {
+        if (cid === provider.awareness.clientID) continue;
+        const u = state.user || {};
+        html.push(`<span class="peer"><span class="dot" style="background:${u.color || '#888'}"></span>${u.name || cid}</span>`);
+      }
+      peerEl.innerHTML = html.length ? html.join('') : '<i style="color:#8b95a7">solo tú aún · abre otra pestaña</i>';
+    };
+    provider.awareness.on('change', renderPeers);
+    renderPeers();
+
+    // Buttons.
+    document.getElementById('add').onclick = () => {
+      const x = -200 + Math.random() * 400, y = -150 + Math.random() * 300;
+      flow.addNode({ kind: 'process', x, y, title: `${userName}·${flow.nodeCount() + 1}`, color });
+    };
+    document.getElementById('link').onclick = () => {
+      const n = flow.nodeCount();
+      if (n < 2) return;
+      flow.addEdge({ from: n - 2, to: n - 1 });
+    };
+    document.getElementById('layout').onclick = () => flow.runAutoLayout();
+  </script>
+</body>
+</html>

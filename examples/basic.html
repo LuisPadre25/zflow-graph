@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · basic example</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0d14;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #hud { position: fixed; top: 12px; left: 12px;
+           padding: 8px 12px; font-size: 12px;
+           background: rgba(20,28,40,0.8); border: 1px solid rgba(255,255,255,0.10);
+           border-radius: 6px; color: #8b95a7; backdrop-filter: blur(8px); }
+    #hud .k { color: #f0b93a; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <span class="k">zflow basic</span> · 3 nodes · drag to pan · wheel to zoom ·
+    <span id="ncount">0</span> events
+  </div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+    });
+
+    // The whole API a consumer needs to wire up a working editor:
+    const a = flow.addNode({ kind: 'input',   x: -260, y: 0, title: 'Source' });
+    const b = flow.addNode({ kind: 'process', x:    0, y: 0, title: 'Transform' });
+    const c = flow.addNode({ kind: 'output',  x:  260, y: 0, title: 'Sink' });
+    flow.addEdge({ from: a, to: b });
+    flow.addEdge({ from: b, to: c });
+    flow.fitView();
+
+    let n = 0;
+    flow.on('change', () => { n++; document.getElementById('ncount').textContent = n; });
+    flow.on('node:dblclick', (id) => alert('double-clicked node ' + id));
+  </script>
+</body>
+</html>

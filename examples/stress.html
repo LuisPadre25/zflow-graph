@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · stress test (50k+ nodes)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; touch-action: none; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 14px; left: 14px; width: 320px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(10px);
+             z-index: 100; font-size: 12.5px; line-height: 1.5; }
+    #panel h3 { margin: 0 0 8px; color: #f0b93a; font-size: 13px;
+                text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 4px 0; color: #8b95a7; }
+    #panel button { background: rgba(255,255,255,0.06); color: #e6edf3; border: 1px solid rgba(255,255,255,0.10);
+                    padding: 6px 10px; border-radius: 5px; cursor: pointer;
+                    font-size: 11.5px; margin: 3px 3px 0 0; width: 100%; }
+    #panel button:hover { background: rgba(240,185,58,0.16); }
+    #panel button.acc { background: #f0b93a; color: #0b0f17; font-weight: 700; border-color: transparent; }
+    #stats { position: fixed; bottom: 14px; right: 14px; padding: 10px 14px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 8px; font: 12px ui-monospace, Consolas, monospace;
+             color: #5be0d0; z-index: 100; backdrop-filter: blur(8px); line-height: 1.7; }
+    #stats .k { color: #8b95a7; }
+    #stats .v { color: #f0b93a; font-weight: 700; }
+    #stats .hot { color: #5bd17a; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h3>Stress test · WebGL optimizado</h3>
+    <p>Cada nodo ocupa 32 bytes en GPU. Buffer pre-alocado al cap; <strong>nada se asigna por frame</strong>. Pan/zoom solo actualiza uniforms.</p>
+    <p>Stress sucesivo:</p>
+    <button class="acc" id="add1k">+ 1,000 nodes</button>
+    <button id="add10k">+ 10,000 nodes</button>
+    <button id="add50k">+ 50,000 nodes</button>
+    <button id="add100k">+ 100,000 nodes (max)</button>
+    <button id="webgl">Toggle WebGL ↔ Canvas2D</button>
+    <button id="randomize">Re-randomize colors</button>
+    <button id="clear">Reset</button>
+  </div>
+  <div id="stats">
+    <div><span class="k">renderer:</span> <span class="v" id="r">canvas2d</span></div>
+    <div><span class="k">nodes:</span>    <span class="v" id="n">0</span></div>
+    <div><span class="k">edges:</span>    <span class="v" id="m">0</span></div>
+    <div><span class="k">fps:</span>      <span id="fps" class="hot">0</span></div>
+    <div><span class="k">draws/f:</span>  <span id="dr" class="v">0</span></div>
+    <div><span class="k">heap MB:</span>  <span id="heap" class="v">—</span></div>
+  </div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+    });
+    window.flow = flow;
+
+    // HUD wiring with fps + memory.
+    const rEl   = document.getElementById('r');
+    const nEl   = document.getElementById('n');
+    const mEl   = document.getElementById('m');
+    const fpsEl = document.getElementById('fps');
+    const drEl  = document.getElementById('dr');
+    const heapEl= document.getElementById('heap');
+    let frames = 0, t0 = performance.now(), draws = 0;
+    const origLoop = flow._loop.bind(flow);
+    flow._loop = () => { frames++; origLoop(); };
+    const origRender = flow._gl ? flow._gl.render?.bind(flow._gl) : null;
+    setInterval(() => {
+      const now = performance.now();
+      const fps = (frames * 1000 / (now - t0)).toFixed(0);
+      const color = fps >= 55 ? '#5bd17a' : fps >= 30 ? '#f0b93a' : '#e8462b';
+      fpsEl.textContent = fps;
+      fpsEl.style.color = color;
+      frames = 0; t0 = now;
+      nEl.textContent = flow.nodeCount().toLocaleString();
+      mEl.textContent = flow.edgeCount().toLocaleString();
+      drEl.textContent = flow._gl ? '2 (1 nodes + 1 edges)' : flow.nodeCount();
+      if (performance.memory) heapEl.textContent = (performance.memory.usedJSHeapSize / 1048576).toFixed(1);
+    }, 500);
+
+    function addNodesFast(count) {
+      flow.options.snapToGrid = false;
+      const t0 = performance.now();
+      const sqrt = Math.ceil(Math.sqrt(count));
+      const off = flow.nodeCount();
+      const specs = new Array(count);
+      for (let i = 0; i < count; i++) {
+        const r = Math.floor(i / sqrt), c = i % sqrt;
+        specs[i] = { kind: 'process',
+          x: (c - sqrt / 2) * 80 - 200,
+          y: (r - sqrt / 2) * 50 - 100,
+          w: 70, h: 36 };
+      }
+      flow.addNodesBulk(specs);
+      // Edges in bulk too.
+      const step = Math.max(1, Math.floor(count / 200));
+      const eSpecs = [];
+      for (let i = off; i < off + count - step; i += step) eSpecs.push({ from: i, to: i + step });
+      flow.addEdgesBulk(eSpecs);
+      console.log(`bulk-add ${count} in ${(performance.now() - t0).toFixed(0)}ms`);
+      flow.fitView(60);
+    }
+
+    document.getElementById('add1k').onclick   = () => addNodesFast(1000);
+    document.getElementById('add10k').onclick  = () => addNodesFast(10000);
+    document.getElementById('add50k').onclick  = () => addNodesFast(50000);
+    document.getElementById('add100k').onclick = () => {
+      const room = flow.w.nodeCap() - flow.nodeCount();
+      addNodesFast(Math.min(100000, room - 10));
+    };
+    document.getElementById('webgl').onclick = async () => {
+      if (flow._gl) { flow.disableWebGL(); rEl.textContent = 'canvas2d'; }
+      else { const ok = await flow.enableWebGL(true); rEl.textContent = ok ? 'webgl (instanced)' : 'canvas2d (gl unavailable)'; }
+    };
+    document.getElementById('randomize').onclick = () => {
+      const palette = ['#5b8def','#c062e8','#5bd17a','#f0b93a','#5be0d0','#fb923c','#e8462b'];
+      for (let i = 0; i < flow.nodeCount(); i++) flow.setNodeColor(i, palette[Math.floor(Math.random() * palette.length)]);
+      if (flow._gl) flow._gl.markAllDirty();
+    };
+    document.getElementById('clear').onclick = () => location.reload();
+  </script>
+</body>
+</html>

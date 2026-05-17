@@ -1,0 +1,14 @@
+node_modules/
+dist/
+zig-out/
+zig-cache/
+.zig-cache/
+coverage/
+*.log
+npm-debug.log*
+.DS_Store
+.env
+.env.local
+.vscode/
+.idea/
+*.tgz

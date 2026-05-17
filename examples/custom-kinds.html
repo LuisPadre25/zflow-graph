@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · custom kinds (plugin API)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0d14;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 12px; left: 12px; padding: 12px 14px;
+             background: rgba(20,28,40,0.85); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 8px; font-size: 12px; backdrop-filter: blur(8px);
+             max-width: 280px; }
+    #panel h4 { margin: 0 0 6px; color: #f0b93a; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 4px 0; color: #8b95a7; line-height: 1.4; }
+    #panel button { background: #f0b93a; color: #0b0f17; border: 0;
+                    padding: 5px 10px; border-radius: 4px; cursor: pointer;
+                    font-weight: 600; margin: 4px 4px 0 0; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h4>Plugin API demo</h4>
+    <p>This example registers 4 domain-specific kinds — <strong>Service, Database, Cache, Queue</strong> — using <code>flow.registerKind()</code>.</p>
+    <p>The kinds didn't exist when the library was built. They're added at runtime.</p>
+    <button id="layout">Auto-layout</button>
+    <button id="force">Force layout</button>
+    <button id="fit">Fit view</button>
+  </div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+    });
+
+    // Register custom kinds. Each call returns the numeric id, but you can
+    // also reference them by name string in addNode/addEdge later.
+    flow.registerKind({ name: 'service',  color: '#5b8def', badge: 'S', w: 140, h: 56, nin: 1, nout: 1 });
+    flow.registerKind({ name: 'database', color: '#5bd17a', badge: 'D', w: 140, h: 56, nin: 1, nout: 0 });
+    flow.registerKind({ name: 'cache',    color: '#f0b93a', badge: 'C', w: 140, h: 56, nin: 1, nout: 0 });
+    flow.registerKind({ name: 'queue',    color: '#fb923c', badge: 'Q', w: 140, h: 56, nin: 1, nout: 1 });
+
+    // Build a tiny microservice graph using the new kinds.
+    const front  = flow.addNode({ kind: 'input',    x: -460, y:    0, title: 'HTTP /api' });
+    const svc    = flow.addNode({ kind: 'service',  x: -200, y:    0, title: 'Order Service' });
+    const cache  = flow.addNode({ kind: 'cache',    x:   60, y: -100, title: 'Redis' });
+    const db     = flow.addNode({ kind: 'database', x:   60, y:  100, title: 'Postgres' });
+    const queue  = flow.addNode({ kind: 'queue',    x:  320, y:  100, title: 'Job queue' });
+    const worker = flow.addNode({ kind: 'service',  x:  580, y:  100, title: 'Worker' });
+    const log    = flow.addNode({ kind: 'output',   x:  580, y: -100, title: 'Audit log' });
+
+    flow.addEdge({ from: front, to: svc });
+    flow.addEdge({ from: svc,   to: cache });
+    flow.addEdge({ from: svc,   to: db });
+    flow.addEdge({ from: svc,   to: log });
+    flow.addEdge({ from: db,    to: queue });
+    flow.addEdge({ from: queue, to: worker });
+
+    flow.runAutoLayout();
+    flow.fitView();
+
+    document.getElementById('layout').onclick = () => flow.runAutoLayout();
+    document.getElementById('force').onclick  = () => flow.runForceLayout();
+    document.getElementById('fit').onclick    = () => flow.fitView();
+  </script>
+</body>
+</html>

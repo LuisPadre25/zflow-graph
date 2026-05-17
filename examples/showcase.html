@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · showcase (full power)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #topbar { position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+              padding: 6px 10px; background: rgba(20,28,40,0.85); backdrop-filter: blur(8px);
+              border: 1px solid rgba(255,255,255,0.10); border-radius: 8px;
+              display: flex; gap: 6px; font-size: 11.5px; z-index: 100; }
+    #topbar button { background: transparent; color: #e6edf3; border: 1px solid rgba(255,255,255,0.10);
+                     padding: 5px 9px; border-radius: 5px; cursor: pointer; font: inherit; }
+    #topbar button:hover { background: rgba(240,185,58,0.10); border-color: rgba(240,185,58,0.40); }
+    #topbar .sep { width: 1px; background: rgba(255,255,255,0.10); margin: 0 4px; }
+    #legend { position: fixed; bottom: 14px; left: 14px; padding: 10px 12px;
+              background: rgba(20,28,40,0.85); border: 1px solid rgba(255,255,255,0.10);
+              border-radius: 8px; font-size: 11px; line-height: 1.55; color: #8b95a7;
+              backdrop-filter: blur(8px); max-width: 320px; z-index: 50; }
+    #legend kbd { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px;
+                  color: #f0b93a; font: 600 10.5px ui-monospace, Consolas, monospace; }
+    #legend h4 { margin: 0 0 6px; color: #f0b93a; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="topbar">
+    <button data-cmd="layout">Auto-layout</button>
+    <button data-cmd="force">Force</button>
+    <button data-cmd="fit">Fit</button>
+    <span class="sep"></span>
+    <button data-cmd="theme">Theme</button>
+    <button data-cmd="minimap">Minimap</button>
+    <button data-cmd="anim">Animate edges</button>
+    <button data-cmd="ortho">Edge: ortho/bezier</button>
+    <span class="sep"></span>
+    <button data-cmd="critical">Critical path</button>
+    <button data-cmd="scc">SCCs</button>
+    <button data-cmd="degree">Color by degree</button>
+    <button data-cmd="path">Path highlight</button>
+    <span class="sep"></span>
+    <button data-cmd="search">Find (Ctrl+F)</button>
+    <button data-cmd="cmd">Commands (Ctrl+K)</button>
+    <button data-cmd="export">Export SVG</button>
+    <span class="sep"></span>
+    <button data-cmd="readonly">Read-only</button>
+    <button data-cmd="presence">Fake collab</button>
+    <button data-cmd="reach">Reach from auth</button>
+  </div>
+  <div id="palette" style="position:fixed;top:60px;left:14px;padding:8px;background:rgba(20,28,40,0.85);border:1px solid rgba(255,255,255,0.10);border-radius:8px;display:flex;flex-direction:column;gap:6px;z-index:90;backdrop-filter:blur(8px);">
+    <div style="font-size:10px;color:#8b95a7;text-transform:uppercase;letter-spacing:0.08em;">drag</div>
+    <div class="pal" data-kind="process"  style="padding:6px 10px;background:rgba(232,176,75,0.16);color:#e8b04b;border-radius:5px;font-size:11px;font-weight:600;">process</div>
+    <div class="pal" data-kind="service"  style="padding:6px 10px;background:rgba(91,141,239,0.16);color:#5b8def;border-radius:5px;font-size:11px;font-weight:600;">service</div>
+    <div class="pal" data-kind="database" style="padding:6px 10px;background:rgba(91,209,122,0.16);color:#5bd17a;border-radius:5px;font-size:11px;font-weight:600;">database</div>
+    <div class="pal" data-kind="queue"    style="padding:6px 10px;background:rgba(251,146,60,0.16);color:#fb923c;border-radius:5px;font-size:11px;font-weight:600;">queue</div>
+  </div>
+  <div id="legend">
+    <h4>zflow showcase</h4>
+    <div><kbd>Ctrl+K</kbd> commands · <kbd>Ctrl+F</kbd> find · <kbd>Ctrl+T</kbd> theme</div>
+    <div><kbd>Ctrl+M</kbd> minimap · <kbd>Ctrl+E</kbd> edge anim · <kbd>L</kbd> layout · <kbd>0</kbd> fit</div>
+    <div><kbd>Tab</kbd> next node · <kbd>1-9</kbd> bookmark · <kbd>Alt+1-9</kbd> jump · <kbd>Alt+drag</kbd> lasso</div>
+    <div><kbd>Ctrl+G</kbd> group · <kbd>Ctrl+]</kbd> front · <kbd>Ctrl+[</kbd> back</div>
+    <div style="margin-top:6px;color:#5be0d0;">Live metrics on running nodes · Pop-in / fade-out · Connection validation blocks self-loops.</div>
+  </div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+      minimap: true,
+      hoverPreview: true,
+    });
+    window.flow = flow;   // available in DevTools console
+
+    // ── Register a couple of custom kinds (plugin API) ────────────────────
+    flow.registerKind({ name: 'service',  color: '#5b8def', badge: 'S', w: 160, h: 80,  nin: 1, nout: 1 });
+    flow.registerKind({ name: 'database', color: '#5bd17a', badge: 'D', w: 160, h: 80,  nin: 1, nout: 0 });
+    flow.registerKind({ name: 'queue',    color: '#fb923c', badge: 'Q', w: 160, h: 80,  nin: 1, nout: 1 });
+
+    // ── Block self-loops as a connection validator demo ───────────────────
+    flow.setConnectionValidator((fromN, fp, toN, tp) => fromN !== toN);
+
+    // ── Build a non-trivial graph using everything: rich content, frames,
+    //    sticky notes, tags, status, progress, sub-tasks, port labels ─────
+    const ingress = flow.addNode({
+      kind: 'input', x: -560, y: 0, title: 'HTTP /api/orders',
+      description: 'Public ingress', tags: ['http', 'public'], status: 'live',
+    });
+    const auth = flow.addNode({
+      kind: 'process', x: -300, y: -90, title: 'Auth + Rate-limit',
+      tags: ['auth'], status: 'ok', progress: 1.0,
+      tasks: [
+        { text: 'JWT verify',    done: true  },
+        { text: 'Quota check',   done: true  },
+        { text: 'Audit log',     done: false },
+      ],
+      portIn: ['req'], portOut: ['ok', 'err'],
+    });
+    const order = flow.addNode({
+      kind: 'service', x:  -30, y: -90, title: 'Order service',
+      tags: ['domain'], status: 'running', progress: 0.6,
+      icon: '🛒',
+    });
+    const cache = flow.addNode({ kind: 'process', x: 240, y: -190, title: 'Redis cache', tags: ['cache'], icon: '⚡' });
+    const db    = flow.addNode({ kind: 'database', x: 240, y:   10, title: 'orders.db', tags: ['pg'], icon: '🗃️' });
+    const queue = flow.addNode({ kind: 'queue',   x: 520, y:   10, title: 'fulfilment.q', tags: ['kafka'] });
+    const work  = flow.addNode({ kind: 'service', x: 800, y:   10, title: 'Worker', icon: '⚙️', status: 'running', progress: 0.4 });
+    const audit = flow.addNode({ kind: 'output',  x: 800, y: -190, title: 'Audit sink', tags: ['s3'] });
+    const decide = flow.addNode({ kind: 'decision', x:  -30, y: 130, title: 'VIP?' });
+    const vip   = flow.addNode({ kind: 'process', x: 240, y: 200, title: 'Priority lane', status: 'idle' });
+
+    flow.setNodeDescription(order, 'Public order API. Handles cart → payment → shipping.');
+    flow.setNodeLinks(order, [{ url: 'https://example.com/runbook', label: 'runbook' }]);
+
+    flow.addEdge({ from: ingress, to: auth, label: 'request' });
+    flow.addEdge({ from: auth, fp: 0, to: order, label: 'ok' });
+    flow.addEdge({ from: order, to: cache });
+    flow.addEdge({ from: order, to: db });
+    flow.addEdge({ from: db, to: queue });
+    flow.addEdge({ from: queue, to: work });
+    flow.addEdge({ from: order, to: audit });
+    flow.addEdge({ from: ingress, to: decide });
+    flow.addEdge({ from: decide, fp: 0, to: vip });
+    flow.addEdge({ from: vip, to: queue });
+
+    // ── Frame + sticky note ───────────────────────────────────────────────
+    flow.addFrame(-90, -220, 360, 340, 'order domain', '#5b8def');
+    flow.addNote(560, -190, 'Audit sink is fire-and-forget — no back-pressure here. If it slows down, drop oldest.');
+
+    // ── Live metrics: simulate two services emitting load ────────────────
+    setInterval(() => {
+      flow.pushNodeMetric(order, 40 + Math.random() * 60 + Math.sin(Date.now() / 800) * 25);
+      flow.pushNodeMetric(work,  20 + Math.random() * 40 + Math.cos(Date.now() / 1200) * 18);
+      flow.pushNodeMetric(auth,  80 + Math.random() * 20);
+    }, 220);
+
+    // ── Animate the hot path edges ───────────────────────────────────────
+    flow.setAllEdgesAnimated(true);
+
+    // ── Templates registered for the command palette ─────────────────────
+    flow.registerTemplate('Pub-sub pair', (f, x, y) => {
+      const a = f.addNode({ kind: 'queue',   x, y, title: 'topic' });
+      const b = f.addNode({ kind: 'service', x: x + 240, y, title: 'consumer' });
+      f.addEdge({ from: a, to: b });
+    });
+    flow.registerTemplate('CRUD service', (f, x, y) => {
+      const s = f.addNode({ kind: 'service',  x,        y,        title: 'svc' });
+      const d = f.addNode({ kind: 'database', x: x+240, y,        title: 'db' });
+      const c = f.addNode({ kind: 'process',  x: x+240, y: y-110, title: 'cache' });
+      f.addEdge({ from: s, to: d }); f.addEdge({ from: s, to: c });
+    });
+
+    // Inline markdown in description
+    flow.setNodeDescription(auth, 'Validates **JWT** + checks `quota` then forwards.');
+    flow.setNodeImage(ingress, 'https://picsum.photos/seed/zflow/240/120');
+
+    // Lock the audit sink so it can't move
+    flow.lockNode(audit, true);
+
+    // Wire palette → drag-to-canvas
+    document.querySelectorAll('.pal').forEach((el) => {
+      flow.makeDraggable(el, { kind: el.dataset.kind, title: el.dataset.kind });
+    });
+
+    flow.runAutoLayout();
+    flow.fitView();
+
+    // Fake collab presence: two cursors moving in lissajous patterns
+    let pt = 0;
+    setInterval(() => {
+      pt += 0.04;
+      flow.setRemoteCursor('alice', 200 * Math.cos(pt),       150 * Math.sin(pt * 0.7), 'Alice', '#c062e8');
+      flow.setRemoteCursor('bob',   240 * Math.cos(pt + 1.7), 180 * Math.sin(pt * 0.9 + 0.3), 'Bob',   '#5be0d0');
+    }, 60);
+
+    // ── Toolbar wiring ───────────────────────────────────────────────────
+    document.getElementById('topbar').addEventListener('click', (e) => {
+      const cmd = e.target.dataset?.cmd; if (!cmd) return;
+      ({
+        layout:   () => flow.runAutoLayout(),
+        force:    () => flow.runForceLayout(),
+        fit:      () => flow.fitView(),
+        theme:    () => flow.toggleTheme(),
+        minimap:  () => flow.setMinimap(!flow.options.minimap),
+        anim:     () => flow.setAllEdgesAnimated(flow.animatedEdges.size === 0),
+        ortho:    () => flow.setEdgeStyle(flow.options.edgeStyle === 'bezier' ? 'orthogonal' : 'bezier'),
+        critical: () => { flow.clearSelection(); for (const i of flow.criticalPath()) flow.w.setEdgeSelected_(i, 1); },
+        scc:      () => { flow.clearSelection(); for (const g of flow.findSCCs()) for (const n of g) flow.setSelected(n, true); },
+        degree:   () => flow.colorByDegree(),
+        path:     () => flow.setPathHighlight(!flow._pathHighlightEnabled),
+        search:   () => flow.openSearch(),
+        cmd:      () => flow.openCommandPalette(),
+        export:   () => { const blob = new Blob([flow.exportSVG()], { type: 'image/svg+xml' }); window.open(URL.createObjectURL(blob)); },
+        readonly: () => flow.setReadOnly(!flow.readOnly),
+        presence: () => { if (flow.remoteCursors.size) flow.clearRemoteCursors(); else { flow.setRemoteCursor('alice', 0, 0, 'Alice', '#c062e8'); } },
+        reach:    () => { flow._reachableSet ? flow.clearReachable() : flow.setReachableFrom(auth); },
+      }[cmd] || (() => {}))();
+    });
+  </script>
+</body>
+</html>

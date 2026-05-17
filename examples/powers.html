@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · G+H+I+J showcase</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; touch-action: none; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 14px; left: 14px; width: 320px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(10px);
+             z-index: 100; font-size: 12.5px; line-height: 1.5; }
+    #panel h3 { margin: 0 0 8px; color: #f0b93a; font-size: 13px;
+                text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 4px 0; color: #8b95a7; }
+    #panel button { background: rgba(255,255,255,0.06); color: #e6edf3; border: 1px solid rgba(255,255,255,0.10);
+                    padding: 6px 10px; border-radius: 5px; cursor: pointer;
+                    font-size: 11.5px; margin: 3px 3px 0 0; }
+    #panel button:hover { background: rgba(240,185,58,0.18); }
+    #panel button.acc { background: #f0b93a; color: #0b0f17; font-weight: 700; border-color: transparent; }
+    #panel kbd { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px;
+                 color: #f0b93a; font: 600 11px ui-monospace, Consolas, monospace; }
+    #stats { position: fixed; bottom: 14px; right: 14px; padding: 8px 12px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 8px; font: 11px ui-monospace, Consolas, monospace;
+             color: #5be0d0; z-index: 100; backdrop-filter: blur(8px); }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h3>G + H + I + J — Powers demo</h3>
+    <p><strong style="color:#5be0d0;">J — Schema validation</strong>: el nodo morado "string-only" rechaza conexiones que no sean strings.</p>
+    <p><strong style="color:#5be0d0;">I — Expression editor</strong>: doble-click en cualquier nodo o usa el botón abajo.</p>
+    <p><strong style="color:#5be0d0;">H — Pinch/two-finger</strong>: usa trackpad o tablet.</p>
+    <p><strong style="color:#5be0d0;">G — WebGL renderer</strong>: stress-test con 5k nodos.</p>
+    <hr style="border:0;border-top:1px solid rgba(255,255,255,0.10);margin:10px 0;">
+    <button class="acc" id="expr">Editar título (expression)</button>
+    <button id="add5k">Crear 5,000 nodos (stress)</button>
+    <button id="webgl">Toggle WebGL</button>
+    <button id="layout">Layout</button>
+    <button id="fit">Fit</button>
+    <button id="clear">Reset</button>
+  </div>
+  <div id="stats">renderer: <span id="r">canvas2d</span> · nodos: <span id="n">0</span> · fps: <span id="fps">0</span></div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+      webglThreshold: 1000,
+    });
+    window.flow = flow;
+
+    // ── J: kinds con schema de tipos ────────────────────────────────────
+    flow.registerKind({
+      name: 'num-source', color: '#5b8def', badge: 'N', w: 150, h: 60, nin: 0, nout: 1,
+      outputs: [{ name: 'value', type: 'number' }],
+      execute: () => ({ value: Math.round(Math.random() * 100) }),
+    });
+    flow.registerKind({
+      name: 'str-source', color: '#c062e8', badge: 'S', w: 150, h: 60, nin: 0, nout: 1,
+      outputs: [{ name: 'text', type: 'string' }],
+      execute: () => ({ text: ['alpha','beta','gamma'][Math.floor(Math.random() * 3)] }),
+    });
+    flow.registerKind({
+      name: 'string-only', color: '#c062e8', badge: '$', w: 170, h: 60, nin: 1, nout: 0,
+      inputs: [{ name: 'text', type: 'string' }],
+      execute: (ctx, ins) => ctx.log('got string:', ins.text),
+    });
+    flow.registerKind({
+      name: 'number-only', color: '#5b8def', badge: '#', w: 170, h: 60, nin: 1, nout: 0,
+      inputs: [{ name: 'value', type: 'number' }],
+      execute: (ctx, ins) => ctx.log('got number:', ins.value),
+    });
+
+    // ── I: nodos para mostrar expression editor ─────────────────────────
+    const a = flow.addNode({ kind: 'num-source', x: -300, y: -100, title: 'Random num' });
+    const b = flow.addNode({ kind: 'str-source', x: -300, y:   90, title: 'Random str' });
+    const c = flow.addNode({ kind: 'number-only', x: 150, y: -100, title: 'Acepta num' });
+    const d = flow.addNode({ kind: 'string-only', x: 150, y:   90, title: 'Acepta str' });
+    const summary = flow.addNode({ kind: 'process', x: 450, y: 0, title: 'Resultado: {{node_' + a + '.value}}', w: 280 });
+
+    flow.addEdge({ from: a, to: c });
+    flow.addEdge({ from: b, to: d });
+
+    // ── HUD update ──────────────────────────────────────────────────────
+    const rEl  = document.getElementById('r');
+    const nEl  = document.getElementById('n');
+    const fpsEl= document.getElementById('fps');
+    let fpsT = performance.now(), frames = 0;
+    setInterval(() => {
+      nEl.textContent = flow.nodeCount();
+      const now = performance.now(); fpsEl.textContent = (frames * 1000 / (now - fpsT)).toFixed(0);
+      frames = 0; fpsT = now;
+    }, 500);
+    const origLoop = flow._loop.bind(flow);
+    flow._loop = () => { frames++; origLoop(); };
+
+    // ── Buttons ─────────────────────────────────────────────────────────
+    document.getElementById('expr').onclick = () => flow.editNodeExpression(summary, 'title');
+    document.getElementById('add5k').onclick = () => {
+      flow.options.snapToGrid = false;
+      for (let i = 0; i < 5000; i++) {
+        const ang = i * 0.13, r = 80 + Math.sqrt(i) * 12;
+        flow.addNode({ kind: 'process', x: Math.cos(ang) * r, y: Math.sin(ang) * r, w: 60, h: 32 });
+      }
+      flow.fitView(40);
+    };
+    document.getElementById('webgl').onclick = async () => {
+      if (flow._gl) { flow.disableWebGL(); rEl.textContent = 'canvas2d'; }
+      else { const ok = await flow.enableWebGL(true); rEl.textContent = ok ? 'webgl' : 'canvas2d (gl unavailable)'; }
+    };
+    document.getElementById('layout').onclick = () => flow.runAutoLayout();
+    document.getElementById('fit').onclick    = () => flow.fitView();
+    document.getElementById('clear').onclick  = () => location.reload();
+
+    flow.on('connection:rejected', (info) => {
+      console.warn('connection rejected:', info.reason);
+    });
+    flow.fitView();
+  </script>
+</body>
+</html>

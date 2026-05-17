@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zflow · E (plugins) + F (streaming, sub-flows, debug)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07090f;
+                 font-family: ui-sans-serif, system-ui, sans-serif;
+                 color: #e6edf3; overflow: hidden; touch-action: none; }
+    #app { width: 100vw; height: 100vh; }
+    #panel { position: fixed; top: 14px; left: 14px; width: 340px;
+             background: rgba(20,28,40,0.92); border: 1px solid rgba(255,255,255,0.10);
+             border-radius: 10px; padding: 14px 16px; backdrop-filter: blur(10px);
+             z-index: 100; font-size: 12.5px; line-height: 1.5; }
+    #panel h3 { margin: 0 0 6px; color: #f0b93a; font-size: 13px;
+                text-transform: uppercase; letter-spacing: 0.08em; }
+    #panel p { margin: 4px 0; color: #8b95a7; }
+    #panel button { background: rgba(255,255,255,0.06); color: #e6edf3; border: 1px solid rgba(255,255,255,0.10);
+                    padding: 6px 10px; border-radius: 5px; cursor: pointer;
+                    font-size: 11.5px; margin: 3px 3px 0 0; }
+    #panel button:hover { background: rgba(240,185,58,0.16); }
+    #panel button.acc { background: #f0b93a; color: #0b0f17; font-weight: 700; border-color: transparent; }
+    #panel button.warn { background: rgba(232,70,43,0.18); color: #fdb29a; border-color: rgba(232,70,43,0.45); }
+    #panel section { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.10); }
+    #inspector { position: fixed; right: 14px; top: 14px; width: 320px; max-height: 80vh;
+                 background: rgba(20,28,40,0.94); border: 1px solid rgba(255,255,255,0.10);
+                 border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(10px);
+                 z-index: 100; font: 12px ui-monospace, Consolas, monospace; color: #c8d1de;
+                 overflow: auto; }
+    #inspector h4 { margin: 0 0 8px; color: #5be0d0; font-family: Inter, ui-sans-serif;
+                    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    #inspector .row { margin: 4px 0; }
+    #inspector .k { color: #8b95a7; }
+    #inspector .v { color: #f0b93a; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="panel">
+    <h3>E + F demo</h3>
+    <p><strong style="color:#5be0d0;">E — Plugins</strong>: 3 plugins activos (autosave, perf-overlay, command-logger).</p>
+    <p><strong style="color:#5be0d0;">F — Streaming</strong>: el nodo "stream" emite 5 valores en serie.</p>
+    <p><strong style="color:#5be0d0;">Sub-flow</strong>: el frame "math pipeline" se convierte en kind reusable.</p>
+    <p><strong style="color:#5be0d0;">Debug</strong>: pon breakpoints (click derecho), pausa, paso a paso.</p>
+    <section>
+      <button class="acc" id="run">Run ▶</button>
+      <button id="step">Step over ⤾</button>
+      <button id="resume">Resume ↻</button>
+      <button id="loop">Loop</button>
+      <button id="stop" class="warn">Stop</button>
+    </section>
+    <section>
+      <button id="makeSubflow">Convert frame → sub-flow kind</button>
+      <button id="instanceSubflow">Instance sub-flow ×3</button>
+      <button id="clearBp">Clear breakpoints</button>
+    </section>
+  </div>
+  <div id="inspector">
+    <h4>inspector</h4>
+    <div id="insp-body">click derecho un nodo para poner/quitar breakpoint.</div>
+  </div>
+  <script type="module">
+    import { ZFlow } from '../src/zflow.js';
+
+    const flow = await ZFlow.create({
+      container: document.getElementById('app'),
+      wasmUrl: '../dist/zflow.wasm',
+      minimap: true,
+    });
+    window.flow = flow;
+    flow.setRunStepDelay(150);
+
+    // ── E — Plugins ─────────────────────────────────────────────────────
+    // Plugin 1: autosave to localStorage on change.
+    flow.use({
+      name: 'autosave',
+      init: (f) => { const json = localStorage.getItem('zf-autosave'); /* skip restore for demo */ void json; },
+      onChange: (f) => { try { localStorage.setItem('zf-autosave', JSON.stringify(f.toJSON())); } catch {} },
+      onNodeAdd: (f, id, spec) => console.log('[autosave] node added', id, spec.kind),
+    });
+
+    // Plugin 2: perf overlay (afterRender draws fps top-right of canvas).
+    flow.use({
+      name: 'perf-overlay',
+      _frames: 0, _t0: performance.now(), _fps: 0,
+      afterRender: (f, ctx) => {
+        this._frames = (this._frames || 0) + 1;
+        const now = performance.now();
+        if (now - (this._t0 || 0) > 500) {
+          this._fps = (this._frames * 1000 / (now - this._t0)).toFixed(0);
+          this._frames = 0; this._t0 = now;
+        }
+        ctx.save();
+        ctx.font = '600 11px ui-monospace, Consolas, monospace';
+        ctx.fillStyle = 'rgba(91,224,208,0.85)';
+        ctx.fillText(`fps ${this._fps || 0}`, f.canvas.width - 80, 22);
+        ctx.restore();
+      },
+    });
+
+    // Plugin 3: command logger via onBeforeExec hook.
+    flow.use({
+      name: 'exec-logger',
+      onBeforeExec: (f, id, inputs) => console.log('▸ exec', id, JSON.stringify(inputs)),
+      onAfterExec:  (f, id, output) => console.log('✓ done', id, JSON.stringify(output)),
+    });
+
+    // ── F — Streaming kind (async generator) ────────────────────────────
+    flow.registerKind({
+      name: 'stream', color: '#c062e8', badge: '∿', w: 150, h: 60, nin: 0, nout: 1,
+      execute: async function* (ctx) {
+        for (let i = 0; i < 5; i++) {
+          if (ctx.signal.aborted) return;
+          ctx.setProgress(i / 5);
+          yield { value: 10 + i * 7 };
+          await new Promise((r) => setTimeout(r, 220));
+        }
+        ctx.setProgress(1);
+      },
+    });
+    flow.registerKind({
+      name: 'collect', color: '#5bd17a', badge: 'Σ', w: 150, h: 60, nin: 1, nout: 0,
+      execute: (ctx, ins) => { ctx.log('collected:', ins.value ?? ins[0]); return { last: ins.value ?? ins[0] }; },
+    });
+
+    // Custom kinds with distinct executors so each node does what its label says.
+    flow.registerKind({
+      name: 'double', color: '#e8b04b', badge: '×2', w: 150, h: 60, nin: 1, nout: 1,
+      execute: (ctx, ins) => ({ value: (ins.value ?? ins[0] ?? 0) * 2 }),
+    });
+    flow.registerKind({
+      name: 'minus5', color: '#e8b04b', badge: '−5', w: 150, h: 60, nin: 1, nout: 1,
+      execute: (ctx, ins) => ({ value: (ins.value ?? ins[0] ?? 0) - 5 }),
+    });
+
+    // ── Build pipeline + frame to be converted ──────────────────────────
+    const src = flow.addNode({ kind: 'stream',  x: -340, y: 0, title: 'stream 5×' });
+    const dbl = flow.addNode({ kind: 'double',  x:  -90, y: 0, title: 'double' });
+    const sub = flow.addNode({ kind: 'minus5',  x:  150, y: 0, title: 'minus 5' });
+    const out = flow.addNode({ kind: 'collect', x:  400, y: 0, title: 'sink' });
+
+    flow.addEdge({ from: src, to: dbl });
+    flow.addEdge({ from: dbl, to: sub });
+    flow.addEdge({ from: sub, to: out });
+
+    // Wrap dbl + sub in a frame so we can turn the frame into a sub-flow kind.
+    flow.addFrame(-150, -60, 380, 130, 'math pipeline', '#5be0d0');
+
+    flow.fitView();
+
+    // ── Debug: right-click toggles breakpoint ──────────────────────────
+    flow.on('node:dblclick', (id) => flow.editNodeExpression(id, 'title'));
+    flow.canvas.addEventListener('contextmenu', (e) => {
+      const wp = flow._s2w(e.clientX, e.clientY);
+      const nid = flow.w.hitTestNode(wp.x, wp.y);
+      if (nid !== -1) { flow.toggleBreakpoint(nid); e.preventDefault(); e.stopPropagation(); }
+    }, true);
+
+    // ── Inspector panel updates ────────────────────────────────────────
+    const insp = document.getElementById('insp-body');
+    const refreshInsp = () => {
+      const sel = flow.getSelection()[0];
+      if (sel === undefined) { insp.innerHTML = 'click un nodo para inspeccionar.'; return; }
+      const cat = flow.kinds[flow.V.kind[sel]];
+      const val = flow._values.get(sel);
+      const status = flow.status.get(sel) || 'idle';
+      insp.innerHTML = `
+        <div class="row"><span class="k">id:</span> <span class="v">${sel}</span></div>
+        <div class="row"><span class="k">kind:</span> <span class="v">${cat.name}</span></div>
+        <div class="row"><span class="k">title:</span> <span class="v">${flow.titles.get(sel) || '—'}</span></div>
+        <div class="row"><span class="k">status:</span> <span class="v">${status}</span></div>
+        <div class="row"><span class="k">value:</span></div>
+        <pre style="margin:6px 0;padding:6px;background:rgba(0,0,0,0.4);border-radius:4px;color:#5be0d0;font-size:11px;">${val ? JSON.stringify(val, null, 2) : '(none)'}</pre>
+        <div class="row"><span class="k">breakpoint:</span> <span class="v">${flow.breakpoints.has(sel) ? 'on' : 'off'}</span></div>`;
+    };
+    // Throttle to ~30 fps so streaming high-frequency emits don't thrash the DOM.
+    let inspPending = false;
+    const throttledInsp = () => {
+      if (inspPending) return;
+      inspPending = true;
+      requestAnimationFrame(() => { inspPending = false; refreshInsp(); });
+    };
+    flow.on('select', refreshInsp);
+    flow.on('node:done', throttledInsp);
+    flow.on('node:emit', throttledInsp);
+    flow.on('run:paused', (info) => {
+      insp.innerHTML = `<div style="color:#f0b93a;font-weight:700;font-family:Inter, ui-sans-serif;">⏸ PAUSED at node ${info.nodeId}</div><div class="row">click <strong>Step over</strong> para avanzar uno · <strong>Resume</strong> para seguir.</div>`;
+      flow.clearSelection(); flow.w.setSelected(info.nodeId, 1);
+    });
+
+    // ── Buttons ─────────────────────────────────────────────────────────
+    document.getElementById('run').onclick    = () => flow.run();
+    document.getElementById('step').onclick   = () => { flow.setStepMode(true); if (flow.isPaused()) flow.stepOver(); else flow.run(); };
+    document.getElementById('resume').onclick = () => flow.resume();
+    document.getElementById('loop').onclick   = () => flow.startLoop(1200);
+    document.getElementById('stop').onclick   = () => { flow.stopLoop(); flow.stop(); };
+    document.getElementById('clearBp').onclick = () => flow.clearBreakpoints();
+    document.getElementById('makeSubflow').onclick = () => {
+      const f = flow.frames[0];
+      if (!f) return alert('No frame to convert');
+      const name = flow.registerSubflowFromFrame(f.id, { name: 'mathPipe', badge: 'µ', color: '#5be0d0' });
+      alert('Created sub-flow kind: ' + name + '\\nClick "Instance sub-flow ×3" to drop instances.');
+    };
+    document.getElementById('instanceSubflow').onclick = () => {
+      if (!flow.kindByName.has('mathPipe')) return alert('Crea primero el sub-flow');
+      for (let i = 0; i < 3; i++) {
+        flow.addNode({ kind: 'mathPipe', x: -300 + i * 220, y: 220, title: `pipe #${i+1}` });
+      }
+      flow.fitView();
+    };
+  </script>
+</body>
+</html>
