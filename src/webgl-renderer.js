@@ -109,7 +109,24 @@ export class WebGLRenderer {
     if (origMove) {
       f.w.moveSelectedBy = (dx, dy) => {
         origMove.call(f.w, dx, dy);
-        for (let i = 0; i < f.w.nodeCount_(); i++) if (f.V.selected[i]) this._dirty.add(i);
+        f._ensureAdj?.();
+        const adj = f._nodeAdj;
+        for (let i = 0; i < f.w.nodeCount_(); i++) {
+          if (!f.V.selected[i]) continue;
+          this._dirty.add(i);
+          // Edges incident on a moved node need their geometry recomputed.
+          if (adj && adj[i]) for (let k = 0; k < adj[i].length; k++) this._dirtyEdges.add(adj[i][k]);
+        }
+      };
+    }
+    const origMoveNode = f.w.moveNode;
+    if (origMoveNode) {
+      f.w.moveNode = (id, x, y) => {
+        origMoveNode.call(f.w, id, x, y);
+        this._dirty.add(id);
+        f._ensureAdj?.();
+        const adj = f._nodeAdj;
+        if (adj && adj[id]) for (let k = 0; k < adj[id].length; k++) this._dirtyEdges.add(adj[id][k]);
       };
     }
   }
@@ -231,39 +248,27 @@ export class WebGLRenderer {
     const camWY = f.cam.y + (this.glCanvas.height / (2 * dpr * f.cam.zoom));
 
     // ── Detect what needs upload ────────────────────────────────────
-    if (this._fullRebuildNeeded || n !== this._lastNodeCount) {
+    const nodeStride = NODE_STRIDE_F;
+    const edgeStride = EDGE_VERTS_PER * EDGE_STRIDE_F;
+    const fullNodes = this._fullRebuildNeeded || n !== this._lastNodeCount;
+    const fullEdges = this._fullRebuildNeeded || m !== this._lastEdgeCount;
+    if (fullNodes) {
       for (let i = 0; i < n; i++) this._writeNode(i);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuf);
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.nodeData.subarray(0, n * NODE_STRIDE_F));
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.nodeData.subarray(0, n * nodeStride));
       this._dirty.clear();
     } else if (this._dirty.size) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuf);
-      // Combine contiguous dirty ranges to minimize bufferSubData calls.
-      const sorted = [...this._dirty].sort((a, b) => a - b);
-      let runStart = sorted[0], runEnd = sorted[0];
-      for (let k = 1; k < sorted.length; k++) {
-        if (sorted[k] === runEnd + 1) runEnd = sorted[k];
-        else {
-          for (let i = runStart; i <= runEnd; i++) this._writeNode(i);
-          gl.bufferSubData(gl.ARRAY_BUFFER, runStart * NODE_STRIDE_F * 4,
-            this.nodeData.subarray(runStart * NODE_STRIDE_F, (runEnd + 1) * NODE_STRIDE_F));
-          runStart = sorted[k]; runEnd = sorted[k];
-        }
-      }
-      for (let i = runStart; i <= runEnd; i++) this._writeNode(i);
-      gl.bufferSubData(gl.ARRAY_BUFFER, runStart * NODE_STRIDE_F * 4,
-        this.nodeData.subarray(runStart * NODE_STRIDE_F, (runEnd + 1) * NODE_STRIDE_F));
-      this._dirty.clear();
+      this._uploadRuns(this._dirty, this.nodeBuf, this.nodeData, nodeStride, (i) => this._writeNode(i));
     }
-
-    if (this._fullRebuildNeeded || m !== this._lastEdgeCount || this._dirty.size === 0) {
-      // Edges depend on node positions, but only rebuild on full-rebuild path
-      // since we keep no per-edge incremental delta yet.
-      if (this._fullRebuildNeeded || m !== this._lastEdgeCount) {
-        for (let i = 0; i < m; i++) this._writeEdge(i);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuf);
-        gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.edgeData.subarray(0, m * EDGE_VERTS_PER * EDGE_STRIDE_F));
-      }
+    if (fullEdges) {
+      for (let i = 0; i < m; i++) this._writeEdge(i);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.edgeData.subarray(0, m * edgeStride));
+      this._dirtyEdges.clear();
+    } else if (this._dirtyEdges.size) {
+      // Filter out edges that no longer exist (deletes shift the buffer end).
+      for (const e of this._dirtyEdges) if (e >= m) this._dirtyEdges.delete(e);
+      this._uploadRuns(this._dirtyEdges, this.edgeBuf, this.edgeData, edgeStride, (i) => this._writeEdge(i));
     }
 
     this._lastNodeCount = n;
@@ -337,8 +342,27 @@ export class WebGLRenderer {
 
   /** Mark a node as needing buffer update. Called from host on move/recolor. */
   markNodeDirty(i) { this._dirty.add(i); }
-  markEdgeDirty(i) { this._dirtyEdges.add(i); this._fullRebuildNeeded = true; }
+  markEdgeDirty(i) { this._dirtyEdges.add(i); }
   markAllDirty()   { this._fullRebuildNeeded = true; }
+
+  /** Upload a dirty Set by collapsing it into contiguous runs of `stride` floats. */
+  _uploadRuns(set, buf, dataArr, stride, writeOne) {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    const sorted = [...set].sort((a, b) => a - b);
+    let runStart = sorted[0], runEnd = sorted[0];
+    for (let k = 1; k < sorted.length; k++) {
+      if (sorted[k] === runEnd + 1) { runEnd = sorted[k]; continue; }
+      for (let i = runStart; i <= runEnd; i++) writeOne(i);
+      gl.bufferSubData(gl.ARRAY_BUFFER, runStart * stride * 4,
+        dataArr.subarray(runStart * stride, (runEnd + 1) * stride));
+      runStart = sorted[k]; runEnd = sorted[k];
+    }
+    for (let i = runStart; i <= runEnd; i++) writeOne(i);
+    gl.bufferSubData(gl.ARRAY_BUFFER, runStart * stride * 4,
+      dataArr.subarray(runStart * stride, (runEnd + 1) * stride));
+    set.clear();
+  }
 
   dispose() {
     this._resizeObs?.disconnect();

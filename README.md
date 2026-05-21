@@ -163,6 +163,93 @@ flow.addNode({ kind: 'authPipe', x: 600, y: 100 });
 
 The library auto-detects inputs and outputs of the sub-flow based on which inner nodes lack inside-graph predecessors / successors.
 
+## Common patterns
+
+These are the patterns most apps actually need. Skip if you only want the toy example above.
+
+### Loading a graph from your own data model
+
+If you already have a `{ nodes, edges }` shape with **your own string ids**, use `loadGraph`. It wipes the canvas and inserts everything in one atomic transaction — single `change` event, single undo snapshot — and resolves the `from`/`to` refs by your ids automatically.
+
+```js
+const idMap = flow.loadGraph({
+  nodes: [
+    { id: 'svc_users', kind: 'service', x: 0,   y: 0, title: 'Users API' },
+    { id: 'db_main',   kind: 'db',      x: 200, y: 0, title: 'PostgreSQL' },
+  ],
+  edges: [
+    { from: 'svc_users', to: 'db_main', label: 'SELECT' },
+  ],
+});
+
+idMap.get('svc_users')              // → 0  (zflow numeric id)
+flow.findNodeByUserId('db_main')    // → 1
+```
+
+The user id you passed is **also persisted in `data.__id`**, so it survives `toJSON()` → `loadJSON()` round-trips and remote edits over Yjs.
+
+### Free-form metadata per node (`data`)
+
+Need to attach a domain object, a database row id, a logical ref — anything? Use `data`. It is a `Map<zid, any>` round-tripped through `toJSON`/`loadJSON` and remapped automatically after deletes.
+
+```js
+const id = flow.addNode({
+  kind: 'service',
+  x: 0, y: 0,
+  data: { serviceId: 'svc_users', tenant: 'acme', uptime: 0.998 },
+});
+
+flow.getNodeData(id).serviceId      // → 'svc_users'
+flow.setNodeData(id, { ...flow.getNodeData(id), uptime: 0.999 });
+```
+
+When the user deletes a node, zflow compacts its internal arrays. The `data` map (and every other JS-side map — titles, colors, bookmarks, breakpoints, etc.) is remapped to match. **You do not need to maintain a side table** of `logicalId → zid`.
+
+### Atomic mutations (`transaction`)
+
+By default every `addNode`/`addEdge`/`setNode*` call fires a `change` event and is undoable individually. For bulk programmatic edits, wrap them so listeners see one consolidated update and the undo stack gets one entry:
+
+```js
+flow.transaction(() => {
+  for (const row of bigPayload) {
+    flow.addNode({ kind: 'service', x: row.x, y: row.y, data: row });
+  }
+  flow.runAutoLayout();
+});
+// Listeners hear ONE 'change'. Undo rolls back the whole batch.
+```
+
+Nesting is safe — only the outermost call commits. The same effect is built into `addNodesBulk`, `addEdgesBulk`, and `loadGraph`.
+
+### Coordinate spaces (overlays, tooltips, custom DOM)
+
+The canvas uses a world space (your node coords) and a screen space (DOM pixels). The pair of helpers converts between them so you can position popovers, custom HUDs, or hit-test against your own logic:
+
+```js
+// User clicked somewhere on the canvas — where in world coords?
+canvas.addEventListener('click', (ev) => {
+  const wp = flow.screenToWorld(ev.clientX, ev.clientY);
+  console.log('clicked at world', wp);  // { x, y }
+});
+
+// Position a custom React/DOM tooltip above node 7.
+const p = flow.getNodePosition(7);                // { x, y, w, h } in world
+const top = flow.worldToScreen(p.x, p.y - p.h/2); // → { x, y } in CSS pixels
+tooltip.style.left = top.x + 'px';
+tooltip.style.top  = top.y + 'px';
+
+// Camera state for minimaps and view sync.
+const cam = flow.getCamera();                     // { x, y, zoom } (snapshot)
+```
+
+### Programmatic selection and single-node delete
+
+```js
+flow.setSelection([3, 7, 12]);    // replace the entire selection
+flow.deleteNode(5);                // delete just one — keeps the rest of selection
+flow.startEditTitle(5);            // open the inline title editor
+```
+
 ## API at a glance
 
 ```js
@@ -170,17 +257,31 @@ The library auto-detects inputs and outputs of the sub-flow based on which inner
 const flow = await ZFlow.create({ container, wasmUrl });
 flow.dispose();
 
+// Loading & atomic edits
+flow.loadGraph({ nodes, edges })       // accepts your own ids, returns Map<userId, zid>
+flow.transaction(fn)                    // one 'change' event + one undo snapshot
+flow.findNodeByUserId(userId)           // look up zid by the id you passed to loadGraph
+flow.toJSON() / loadJSON(data)
+
 // Mutation
-flow.addNode(spec) / addEdge(spec) / deleteSelection() / moveNode(id, x, y)
+flow.addNode(spec) / addEdge(spec) / moveNode(id, x, y)
+flow.deleteSelection() / deleteNode(id)
 flow.addNodesBulk(specs) / addEdgesBulk(specs)   // batch (50k nodes in ~50ms)
 
 // Selection
+flow.setSelection([ids])                // replace selection
 flow.setSelected(id, on) / toggleSelected(id) / clearSelection() / selectAll()
 flow.getSelection()
 
-// Rich content
+// Coordinate helpers (overlays / tooltips)
+flow.screenToWorld(cx, cy) / worldToScreen(wx, wy)
+flow.getCamera() / getNodePosition(id)
+flow.startEditTitle(id)
+
+// Rich content per node
 flow.setNodeTitle / Description / Color / Tags / Status / Progress
 flow.setNodeImage / Checked / Tasks / Icon / Links
+flow.setNodeData(id, anyObject) / getNodeData(id)   // free-form metadata bag
 
 // Runtime
 flow.registerKind({ name, execute, retry, inputs, outputs, ... })
@@ -195,8 +296,8 @@ flow.evalExpression('{{node_3.value}} * 2')
 // Algorithms
 flow.shortestPath(from, to) / criticalPath() / findSCCs() / findCycles()
 
-// Serialization
-flow.toJSON() / loadJSON(data) / exportSVG() / exportPNG()
+// Export
+flow.exportSVG() / exportPNG()
 
 // Imports
 flow.importMermaid(text) / importDot(text)
@@ -261,12 +362,12 @@ If you bundle, copy `node_modules/@luispm/zflow-graph/dist/zflow.wasm` to your `
 You need Zig 0.16+ and Node 18+.
 
 ```bash
-git clone https://github.com/luisg/@luispm/zflow-graph
-cd @luispm/zflow-graph
+git clone https://github.com/LuisPadre25/zflow-graph
+cd zflow-graph
 npm install
 zig build           # produces dist/zflow.wasm
 npm run build:js    # produces dist/zflow.{esm,umd}{,.min}.js
-npm test            # 47 tests across 6 files
+npm test            # 61 tests across 7 files
 ```
 
 ## Security

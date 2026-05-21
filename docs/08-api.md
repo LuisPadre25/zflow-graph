@@ -34,12 +34,55 @@ Detach all listeners, remove canvas, release WASM views.
 
 ---
 
+## Atomic loading
+
+```js
+flow.loadGraph({ nodes, edges }) → Map<userId, zid>
+flow.findNodeByUserId(userId) → number      // -1 if not found
+flow.transaction(fn) → result
+```
+
+`loadGraph` wipes the current graph and inserts everything as one atomic operation — single `change` event, single undo snapshot. Edges resolve `from`/`to` against the `id` you put on each node (string, number, anything).
+
+**`loadGraph` shape:**
+
+```js
+{
+  nodes: [
+    { id: 'a', kind: 'service', x: 0, y: 0, title: 'A', data: {...} },
+  ],
+  edges: [
+    { from: 'a', to: 'b', fp: 0, tp: 0, label: 'next' },
+  ],
+}
+```
+
+Each node's `id` is also stashed in `node.data.__id`, so `toJSON()` / `loadJSON()` and Yjs sync preserve it. Recover the zflow numeric id from any of:
+
+```js
+const idMap = flow.loadGraph({...});
+idMap.get('a');                 // → 0
+flow.findNodeByUserId('a');     // → 0  (works after loadJSON or remote edits)
+```
+
+**`transaction(fn)`** runs `fn` with events and snapshots suspended; emits a single `change` and pushes one snapshot at the end. Safe to nest — only the outermost call commits.
+
+```js
+flow.transaction(() => {
+  for (const row of payload) flow.addNode({ kind: 'service', ...row });
+  flow.runAutoLayout();
+});
+```
+
+---
+
 ## Mutation
 
 ```js
 flow.addNode(spec) → number          // returns node id or -1
 flow.addEdge(spec) → number          // returns edge id or -1
 flow.deleteSelection()
+flow.deleteNode(id)                  // delete one node, keep rest of selection
 flow.moveNode(id, x, y)
 flow.duplicateSelection(dx = 40, dy = 40)
 flow.addNodesBulk(specs) → number[]  // bulk insert (returns ids in order)
@@ -54,6 +97,7 @@ flow.addEdgesBulk(specs) → number[]
 - `title`, `color`, `description`, `tags`, `status`, `progress`
 - `image`, `checked`, `tasks`, `icon`, `links`
 - `portIn`, `portOut` — per-node port label override
+- `data` — free-form metadata, round-tripped through serialization
 - `animate: false` — skip pop-in animation
 
 **`addEdge` spec fields:**
@@ -63,11 +107,14 @@ flow.addEdgesBulk(specs) → number[]
 - `tp: number` — target port index (default 0)
 - `label: string` — edge label
 
+> **Compaction & remapping.** When a node is deleted, zflow compacts its internal arrays so the surviving range stays contiguous starting at 0. All JS-side maps (`titles`, `colors`, `data`, `bookmarks`, `breakpoints`, `_values`, metric buffers, edge labels, etc.) are remapped automatically. You **do not** need to maintain external `logicalId → zid` tables — store your id under `data.__id` (or use `loadGraph` which does it for you) and recover it with `findNodeByUserId`.
+
 ---
 
 ## Selection
 
 ```js
+flow.setSelection([ids])            // replace entire selection
 flow.setSelected(id, on)
 flow.toggleSelected(id)
 flow.clearSelection()
@@ -93,9 +140,12 @@ flow.setNodeChecked(id, bool)
 flow.setNodeTasks(id, [{text, done}, ...])
 flow.setNodeIcon(id, glyph)
 flow.setNodeLinks(id, [{url, label}, ...])
+flow.setNodeData(id, anyObject)     // free-form metadata bag
+flow.getNodeData(id) → any
 flow.setPortInLabels(id, labels)
 flow.setPortOutLabels(id, labels)
 flow.setEdgeLabel(eid, label)
+flow.startEditTitle(id)             // open the inline title editor
 ```
 
 ---
@@ -123,6 +173,21 @@ flow.fitView(padding = 80)
 flow.runAutoLayout()        // Sugiyama hierarchical
 flow.runForceLayout(maxFrames = 220)
 ```
+
+---
+
+## Coordinate space & camera
+
+The canvas uses **world space** (the coords you pass to `addNode`) and **screen space** (CSS pixels relative to the container). The pair of helpers converts between them.
+
+```js
+flow.screenToWorld(clientX, clientY) → { x, y }    // mouse / pointer event
+flow.worldToScreen(worldX, worldY)   → { x, y }    // CSS pixels
+flow.getCamera()                     → { x, y, zoom }    // immutable snapshot
+flow.getNodePosition(id)             → { x, y, w, h } | null
+```
+
+`screenToWorld` takes raw `clientX/Y` (e.g. from a `MouseEvent`); the helper handles `devicePixelRatio` and the canvas bounding rect internally. `getCamera()` returns a copy — mutating it does not move the camera (use `panTo` / `zoomTo`).
 
 ---
 

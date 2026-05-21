@@ -335,6 +335,108 @@ await load();
 
 ---
 
+## Recipe: load a graph from your own domain model
+
+Common case: your app has a `{ nodes, edges }` shape with **string ids** (`'svc_users'`, `'db_main'`, ...). You want to render it, let the user edit, and read it back without ever holding a `logicalId → zid` side table.
+
+```js
+const myGraph = {
+  nodes: [
+    { id: 'web',     kind: 'frontend', x: -200, y: -100, title: 'App web',     domain: { repo: 'github.com/acme/web' } },
+    { id: 'gateway', kind: 'gateway',  x:    0, y:    0, title: 'API gateway' },
+    { id: 'svc',     kind: 'service',  x:  200, y:    0, title: 'Users API'   },
+    { id: 'db',      kind: 'db',       x:  400, y:    0, title: 'PostgreSQL'  },
+  ],
+  edges: [
+    { from: 'web',     to: 'gateway', label: 'HTTPS' },
+    { from: 'gateway', to: 'svc' },
+    { from: 'svc',     to: 'db',      label: 'SELECT' },
+  ],
+};
+
+// Map domain fields into node.data so they survive every operation.
+flow.loadGraph({
+  nodes: myGraph.nodes.map(n => ({
+    id: n.id, kind: n.kind, x: n.x, y: n.y, title: n.title,
+    data: { domain: n.domain ?? null },
+  })),
+  edges: myGraph.edges,
+});
+
+// React to user edits — the runtime gives you back the zflow numeric id,
+// turn it back into your domain id via flow.data.
+flow.on('change', () => {
+  const out = { nodes: [], edges: [] };
+  for (let i = 0; i < flow.nodeCount(); i++) {
+    const d = flow.getNodeData(i) || {};
+    const p = flow.getNodePosition(i);
+    out.nodes.push({ id: d.__id, kind: flow.kinds[flow.V.kind[i]].name, x: p.x, y: p.y });
+  }
+  saveToBackend(out);
+});
+
+// When the user opens a context-menu action, jump back to your domain id:
+function onContextMenuClick(zid) {
+  const myId = flow.getNodeData(zid)?.__id;       // e.g. 'svc'
+  navigateToServicePage(myId);
+}
+```
+
+After this, the typical "wipe + repopulate" boilerplate every consumer used to write disappears.
+
+---
+
+## Recipe: a custom DOM overlay positioned over a node
+
+Want a React/Vue/raw-DOM popover that tracks a node as the user pans/zooms? Use the coordinate helpers and re-position from the `change` event (or on every animation frame for live drag).
+
+```js
+const overlay = document.createElement('div');
+Object.assign(overlay.style, {
+  position: 'absolute', pointerEvents: 'none',
+  padding: '6px 10px', background: '#161b27', color: '#e6edf3',
+  borderRadius: '6px', font: '12px Inter, ui-sans-serif',
+});
+overlay.textContent = 'attached';
+container.appendChild(overlay);
+
+const trackedId = 3;
+
+function positionOverlay() {
+  const p = flow.getNodePosition(trackedId);
+  if (!p) { overlay.style.display = 'none'; return; }
+  const top = flow.worldToScreen(p.x, p.y - p.h / 2 - 8);
+  const dpr = window.devicePixelRatio || 1;
+  overlay.style.left = (top.x / dpr) + 'px';
+  overlay.style.top  = (top.y / dpr) + 'px';
+}
+
+// Re-position on commits AND every frame (cheap — just a div transform).
+flow.on('change', positionOverlay);
+function loop() { positionOverlay(); requestAnimationFrame(loop); }
+loop();
+```
+
+---
+
+## Recipe: atomic edits without flooding listeners
+
+A common mistake: 1000 calls to `addNode` fire 1000 `change` events and push 1000 undo snapshots. Use `transaction`:
+
+```js
+flow.transaction(() => {
+  for (const row of bigPayload) {
+    flow.addNode({ kind: 'service', ...row });
+  }
+  flow.runAutoLayout();
+});
+// Listeners hear ONE 'change'. The whole batch is ONE undo.
+```
+
+This is what `loadGraph` and `addNodesBulk` do internally.
+
+---
+
 ## Next
 
 → [API Reference](./08-api.md) — every method, every event

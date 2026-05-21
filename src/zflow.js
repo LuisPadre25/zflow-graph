@@ -144,6 +144,10 @@ export class ZFlow {
     this.titles = new Map();
     this.colors = new Map();
     this.descriptions = new Map();
+    // Free-form metadata bag, per-node. Consumers stash logical ids, business
+    // domain refs, anything they want round-tripped through toJSON/loadJSON
+    // without inventing their own Map<zid, ...> side table.
+    this.data = new Map();
     this.tags = new Map();
     this.status = new Map();
     this.progress = new Map();
@@ -312,6 +316,7 @@ export class ZFlow {
     if (spec.links)       this.links.set(id, spec.links.map((l) => ({ ...l })));
     if (spec.portIn)      this.portIn.set(id, spec.portIn.slice());
     if (spec.portOut)     this.portOut.set(id, spec.portOut.slice());
+    if (spec.data !== undefined) this.data.set(id, spec.data);
     if (spec.animate !== false) this._nodeAddedAt.set(id, performance.now());
     if (this._hooks) this._runHook('onNodeAdd', id, spec);
     this._emit('change');
@@ -326,13 +331,17 @@ export class ZFlow {
     const wasSilent = this._suspendEvents; this._suspendEvents = true;
     for (let i = 0; i < specs.length; i++) {
       const s = specs[i];
-      const k = this._resolveKind(s.kind);
-      const id = this.w.addNode(k, s.x ?? 0, s.y ?? 0);
+      const k = this._resolveKind(s.kind ?? 'process');
+      const cat = this.kinds[k];
+      const id = this.w.addNode(
+        s.x ?? 0, s.y ?? 0,
+        s.w ?? cat.w, s.h ?? cat.h,
+        k, s.nin ?? cat.nin, s.nout ?? cat.nout,
+      );
       if (id < 0) { ids[i] = -1; continue; }
-      if (s.w !== undefined) this.V.sizeW[id] = s.w;
-      if (s.h !== undefined) this.V.sizeH[id] = s.h;
       if (s.title) this.titles.set(id, s.title);
       if (s.color) this.colors.set(id, s.color);
+      if (s.data !== undefined) this.data.set(id, s.data);
       ids[i] = id;
     }
     this._suspendEvents = wasSilent;
@@ -380,9 +389,84 @@ export class ZFlow {
     this._runOrder = null;
     // Capture dying entities for fade-out before WASM compacts the arrays.
     this._captureDying();
+    // Build pre-compaction remaps so JS-side overlays (titles, data, etc.)
+    // stay aligned with the new node ids after WASM slides survivors down.
+    const nodeRemap = this._buildNodeRemap();
+    const edgeRemap = this._buildEdgeRemap();
     const n = this.w.deleteSelected();
-    if (n > 0) { this.w.snapshot(); this._emit('change'); }
+    if (n > 0) {
+      this._applyNodeRemap(nodeRemap);
+      this._applyEdgeRemap(edgeRemap);
+      this.w.snapshot();
+      this._emit('change');
+    }
     return n;
+  }
+  /** Compute Map<oldId, newId|null> matching WASM's deleteSelected compaction. */
+  _buildNodeRemap() {
+    const n = this.w.nodeCount_();
+    const m = new Map();
+    let newId = 0;
+    for (let i = 0; i < n; i++) {
+      if (this.V.selected[i]) m.set(i, null);
+      else m.set(i, newId++);
+    }
+    return m;
+  }
+  /** Same idea for edges: dropped if either endpoint is selected or edge itself. */
+  _buildEdgeRemap() {
+    const m = this.w.edgeCount_();
+    const out = new Map();
+    let newE = 0;
+    for (let e = 0; e < m; e++) {
+      const a = this.V.edgeFromN[e], b = this.V.edgeToN[e];
+      if (this.V.selected[a] || this.V.selected[b] || this.V.edgeSel[e]) out.set(e, null);
+      else out.set(e, newE++);
+    }
+    return out;
+  }
+  _applyNodeRemap(remap) {
+    const nodeMaps = [this.titles, this.colors, this.descriptions, this.tags, this.status,
+                      this.progress, this.image, this.checked, this.tasks, this.icon,
+                      this.links, this.portIn, this.portOut, this.zOrder, this.data];
+    for (const orig of nodeMaps) this._remapKeyedMap(orig, remap);
+    this._remapKeyedSet(this.locked, remap);
+    this._remapKeyedSet(this.breakpoints, remap);
+    this._remapKeyedMap(this._values, remap);
+    this._remapKeyedMap(this._memoKeys, remap);
+    this._remapKeyedMap(this.metrics, remap);
+    this._remapKeyedMap(this.metricMax, remap);
+    // Bookmarks: slot -> nodeId reverse mapping.
+    const newBookmarks = new Map();
+    for (const [slot, oldId] of this.bookmarks) {
+      const newId = remap.get(oldId);
+      if (newId != null) newBookmarks.set(slot, newId);
+    }
+    this.bookmarks = newBookmarks;
+  }
+  _applyEdgeRemap(remap) {
+    this._remapKeyedMap(this.edgeLabels, remap);
+    this._remapKeyedSet(this.animatedEdges, remap);
+    this._remapKeyedMap(this._edgeWaypoints, remap);
+    this._remapKeyedMap(this._activeEdges, remap);
+  }
+  _remapKeyedMap(map, remap) {
+    const next = new Map();
+    for (const [oldKey, v] of map) {
+      const newKey = remap.get(oldKey);
+      if (newKey != null) next.set(newKey, v);
+    }
+    map.clear();
+    for (const [k, v] of next) map.set(k, v);
+  }
+  _remapKeyedSet(set, remap) {
+    const next = new Set();
+    for (const oldKey of set) {
+      const newKey = remap.get(oldKey);
+      if (newKey != null) next.add(newKey);
+    }
+    set.clear();
+    for (const k of next) set.add(k);
   }
   _captureDying() {
     const now = performance.now();
@@ -419,6 +503,53 @@ export class ZFlow {
   toggleSelected(id) { this.w.toggleSelected(id); this._emit('select', this.getSelection()); }
   clearSelection()   { this.w.clearSelection(); this._emit('select', []); }
   selectAll()        { this.w.selectAll(); this._emit('select', this.getSelection()); }
+  /** Replace the entire selection with the given ids (no shift-add semantics). */
+  setSelection(ids) {
+    this.w.clearSelection();
+    if (Array.isArray(ids)) for (const id of ids) if (id >= 0 && id < this.w.nodeCount_()) this.w.setSelected(id, 1);
+    this._emit('select', this.getSelection());
+  }
+  /** Delete a single node by id (does not depend on prior selection). */
+  deleteNode(id) {
+    if (this.readOnly) return 0;
+    if (id < 0 || id >= this.w.nodeCount_()) return 0;
+    const prevSel = this.getSelection();
+    this.w.clearSelection();
+    this.w.setSelected(id, 1);
+    const removed = this.deleteSelection();
+    // Restore the prior selection minus the deleted node, remapped to new ids.
+    if (prevSel.length) {
+      this.w.clearSelection();
+      for (const old of prevSel) {
+        if (old === id) continue;
+        const remapped = old > id ? old - 1 : old;
+        if (remapped < this.w.nodeCount_()) this.w.setSelected(remapped, 1);
+      }
+      this._emit('select', this.getSelection());
+    }
+    return removed;
+  }
+  /**
+   * Run `fn` as an atomic mutation: suppresses intermediate 'change' events
+   * and emits a single 'change' at the end. Snapshots once on success. Safe
+   * to nest — only the outermost call commits.
+   */
+  transaction(fn) {
+    if (typeof fn !== 'function') return;
+    if (this._inTransaction) return fn();
+    this._inTransaction = true;
+    const prev = this._suspendEvents;
+    this._suspendEvents = true;
+    let result;
+    try { result = fn(); }
+    finally {
+      this._suspendEvents = prev;
+      this._inTransaction = false;
+    }
+    this.w.snapshot();
+    this._emit('change');
+    return result;
+  }
   getSelection() {
     const out = [];
     const n = this.w.nodeCount_();
@@ -445,6 +576,9 @@ export class ZFlow {
   setNodeLinks(id, links)   { (links && links.length) ? this.links.set(id, links.map((l) => ({ ...l }))) : this.links.delete(id); this._emit('change'); }
   setPortInLabels(id, arr)  { (arr && arr.some(Boolean)) ? this.portIn.set(id, arr.slice()) : this.portIn.delete(id); this._emit('change'); }
   setPortOutLabels(id, arr) { (arr && arr.some(Boolean)) ? this.portOut.set(id, arr.slice()) : this.portOut.delete(id); this._emit('change'); }
+  /** Attach arbitrary data to a node. Round-trips through toJSON/loadJSON. */
+  setNodeData(id, data)     { data === undefined || data === null ? this.data.delete(id) : this.data.set(id, data); this._emit('change'); }
+  getNodeData(id)           { return this.data.get(id); }
 
   // ── Z-order ───────────────────────────────────────────────────────────
   _nextZ = 0;
@@ -1957,6 +2091,7 @@ export class ZFlow {
       if (this.tags.has(i))         node.tags = this.tags.get(i);
       if (this.status.has(i))       node.status = this.status.get(i);
       if (this.progress.has(i))     node.progress = this.progress.get(i);
+      if (this.data.has(i))         node.data = this.data.get(i);
       nodes.push(node);
     }
     const edges = [];
@@ -1972,17 +2107,72 @@ export class ZFlow {
       edgeStyle: this.options.edgeStyle,
     };
   }
+  /**
+   * Atomic load: wipes the current graph and inserts `nodes`/`edges` whose
+   * `from`/`to` reference the caller's free-form ids (strings, numbers, refs).
+   *
+   *   loadGraph({
+   *     nodes: [{ id: 'a', kind: 'process', x: 0, y: 0, title: 'A' }],
+   *     edges: [{ from: 'a', to: 'b', label: 'next' }],
+   *   })
+   *
+   * Returns Map<userId, zflowId> for the host to keep around if needed —
+   * but you can also rely on `data.id` round-tripping through toJSON, since
+   * each node's `id` (if provided) is also stored under `node.data.__id`.
+   * Single 'change' event and a single undo snapshot, regardless of N.
+   */
+  loadGraph(spec = {}) {
+    const nodes = Array.isArray(spec.nodes) ? spec.nodes : [];
+    const edges = Array.isArray(spec.edges) ? spec.edges : [];
+    const idMap = new Map();
+    this.transaction(() => {
+      this.w.reset();
+      this.titles.clear(); this.colors.clear(); this.descriptions.clear();
+      this.tags.clear(); this.status.clear(); this.progress.clear();
+      this.edgeLabels.clear(); this.data.clear();
+      this.bookmarks.clear(); this.locked.clear(); this.breakpoints.clear();
+      this._values.clear?.();
+      for (const n of nodes) {
+        const userId = n.id;
+        const merged = userId !== undefined
+          ? { ...n, data: { ...(n.data || {}), __id: userId } }
+          : n;
+        const zid = this.addNode(merged);
+        if (zid < 0) continue;
+        if (userId !== undefined) idMap.set(userId, zid);
+      }
+      for (const e of edges) {
+        const a = typeof e.from === 'number' && e.from < this.w.nodeCount_() ? e.from : idMap.get(e.from);
+        const b = typeof e.to   === 'number' && e.to   < this.w.nodeCount_() ? e.to   : idMap.get(e.to);
+        if (a === undefined || b === undefined) continue;
+        this.addEdge({ from: a, to: b, fp: e.fp, tp: e.tp, label: e.label });
+      }
+    });
+    if (this._gl) this._gl.markAllDirty();
+    return idMap;
+  }
+  /** Lookup the zflow id that was assigned to a user-supplied id during loadGraph. */
+  findNodeByUserId(userId) {
+    const n = this.w.nodeCount_();
+    for (let i = 0; i < n; i++) {
+      const d = this.data.get(i);
+      if (d && d.__id === userId) return i;
+    }
+    return -1;
+  }
+
   loadJSON(data) {
     this.w.reset();
     this.titles.clear(); this.colors.clear(); this.descriptions.clear();
     this.tags.clear(); this.status.clear(); this.progress.clear();
-    this.edgeLabels.clear();
+    this.edgeLabels.clear(); this.data.clear();
     const idMap = new Map();
     for (const node of (data.nodes || [])) {
       const id = this.addNode({
         kind: node.kind, x: node.x, y: node.y, w: node.w, h: node.h,
         title: node.title, color: node.color, description: node.description,
         tags: node.tags, status: node.status, progress: node.progress,
+        data: node.data,
       });
       idMap.set(node.id ?? id, id);
     }
@@ -2005,53 +2195,161 @@ export class ZFlow {
   /** Build a standalone SVG document representing the current graph. */
   exportSVG() {
     const n = this.w.nodeCount_(), m = this.w.edgeCount_();
-    if (n === 0) return '<svg xmlns="http://www.w3.org/2000/svg"/>';
+    if (n === 0 && this.notes.length === 0 && this.frames.length === 0) {
+      return '<svg xmlns="http://www.w3.org/2000/svg"/>';
+    }
     let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    const expand = (x0, y0, x1, y1) => {
+      if (x0 < mnx) mnx = x0; if (x1 > mxx) mxx = x1;
+      if (y0 < mny) mny = y0; if (y1 > mxy) mxy = y1;
+    };
     for (let i = 0; i < n; i++) {
       const hw = this.V.sizeW[i] * 0.5, hh = this.V.sizeH[i] * 0.5;
-      if (this.V.posX[i] - hw < mnx) mnx = this.V.posX[i] - hw;
-      if (this.V.posX[i] + hw > mxx) mxx = this.V.posX[i] + hw;
-      if (this.V.posY[i] - hh < mny) mny = this.V.posY[i] - hh;
-      if (this.V.posY[i] + hh > mxy) mxy = this.V.posY[i] + hh;
+      expand(this.V.posX[i] - hw, this.V.posY[i] - hh, this.V.posX[i] + hw, this.V.posY[i] + hh);
     }
+    for (const f of this.frames) expand(f.x, f.y, f.x + f.w, f.y + f.h);
+    for (const nt of this.notes) expand(nt.x, nt.y, nt.x + nt.w, nt.y + nt.h);
     const pad = 40;
     const bw = mxx - mnx + pad * 2, bh = mxy - mny + pad * 2;
     const out = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${mnx - pad} ${mny - pad} ${bw} ${bh}" width="${bw}" height="${bh}" style="background:${this.options.background}">`];
+
+    // Defs: gather all edge gradients up front so consumers can serialize cleanly.
+    const defs = [];
     for (let i = 0; i < m; i++) {
       const a = this.V.edgeFromN[i], b = this.V.edgeToN[i];
       const ap = this._portWorld(a, 1, this.V.edgeFromP[i]);
       const bp = this._portWorld(b, 0, this.V.edgeToP[i]);
       const cA = this.colors.get(a) || this.kinds[this.V.kind[a]].color;
       const cB = this.colors.get(b) || this.kinds[this.V.kind[b]].color;
-      const gid = `g${i}`;
-      out.push(`<defs><linearGradient id="${gid}" x1="${ap.x}" y1="${ap.y}" x2="${bp.x}" y2="${bp.y}" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${cA}"/><stop offset="100%" stop-color="${cB}"/></linearGradient></defs>`);
+      defs.push(`<linearGradient id="zfg${i}" x1="${ap.x}" y1="${ap.y}" x2="${bp.x}" y2="${bp.y}" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="${cA}"/><stop offset="100%" stop-color="${cB}"/></linearGradient>`);
+    }
+    if (defs.length) out.push(`<defs>${defs.join('')}</defs>`);
+
+    // Frames (background layer): dashed border + translucent header strip + label.
+    for (const f of this.frames) {
+      const fillA = alphaize(f.color, 0.05);
+      const strokeA = alphaize(f.color, 0.45);
+      const headA = alphaize(f.color, 0.16);
+      out.push(`<rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}" rx="12" fill="${fillA}" stroke="${strokeA}" stroke-width="1.4" stroke-dasharray="8 4"/>`);
+      out.push(`<rect x="${f.x}" y="${f.y}" width="${f.w}" height="26" rx="12" fill="${headA}"/>`);
+      out.push(`<text x="${f.x + 10}" y="${f.y + 17}" font-family="Inter, system-ui, sans-serif" font-size="12" font-weight="600" fill="${f.color}">${escapeXml(f.label || '')}</text>`);
+    }
+
+    // Sticky notes.
+    for (const nt of this.notes) {
+      const fill = (nt.color && nt.color.fill) || '#fef9c3';
+      const border = (nt.color && nt.color.border) || '#caa54a';
+      const textCol = (nt.color && nt.color.text) || '#5b3d12';
+      out.push(`<rect x="${nt.x}" y="${nt.y}" width="${nt.w}" height="${nt.h}" rx="4" fill="${fill}" stroke="${border}" stroke-width="1"/>`);
+      if (nt.text) {
+        const lines = wrapTextForSvg(nt.text, nt.w - 20, 7); // rough char-width estimate
+        const startY = nt.y + 18;
+        for (let li = 0; li < lines.length; li++) {
+          out.push(`<text x="${nt.x + 10}" y="${startY + li * 16}" font-family="Inter, system-ui, sans-serif" font-size="12" fill="${textCol}">${escapeXml(lines[li])}</text>`);
+        }
+      }
+    }
+
+    // Edges.
+    for (let i = 0; i < m; i++) {
+      const a = this.V.edgeFromN[i], b = this.V.edgeToN[i];
+      const ap = this._portWorld(a, 1, this.V.edgeFromP[i]);
+      const bp = this._portWorld(b, 0, this.V.edgeToP[i]);
+      const selected = this.V.edgeSel[i] !== 0;
+      const stroke = selected ? '#f0b93a' : `url(#zfg${i})`;
+      const sw = selected ? 2.4 : 1.7;
+      let d;
       if (this.options.edgeStyle === 'orthogonal') {
         const path = this._orthoPath(ap, bp);
-        const d = `M ${path[0].x} ${path[0].y} ` + path.slice(1).map((p) => `L ${p.x} ${p.y}`).join(' ');
-        out.push(`<path d="${d}" stroke="url(#${gid})" stroke-width="1.7" fill="none" stroke-linejoin="round"/>`);
+        d = `M ${path[0].x} ${path[0].y} ` + path.slice(1).map((p) => `L ${p.x} ${p.y}`).join(' ');
       } else {
         const dx = bp.x - ap.x, dy = bp.y - ap.y;
         const off = Math.max(50, Math.abs(dx) * 0.5 + Math.abs(dy) * 0.4);
-        out.push(`<path d="M ${ap.x} ${ap.y} C ${ap.x + off} ${ap.y} ${bp.x - off} ${bp.y} ${bp.x} ${bp.y}" stroke="url(#${gid})" stroke-width="1.7" fill="none"/>`);
+        d = `M ${ap.x} ${ap.y} C ${ap.x + off} ${ap.y} ${bp.x - off} ${bp.y} ${bp.x} ${bp.y}`;
+      }
+      out.push(`<path d="${d}" stroke="${stroke}" stroke-width="${sw}" fill="none" stroke-linejoin="round"/>`);
+      const label = this.edgeLabels.get(i);
+      if (label) {
+        // Midpoint approximation: average of endpoints (close enough for export).
+        const mx = (ap.x + bp.x) / 2, my = (ap.y + bp.y) / 2;
+        const tw = Math.max(20, label.length * 6.5);
+        out.push(`<rect x="${mx - tw / 2 - 5}" y="${my - 9}" width="${tw + 10}" height="16" rx="5" fill="#0b0f17" stroke="${selected ? '#f0b93a' : alphaize(this.colors.get(a) || this.kinds[this.V.kind[a]].color, 0.6)}" stroke-width="1"/>`);
+        out.push(`<text x="${mx}" y="${my + 3}" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" fill="#e6edf3" text-anchor="middle">${escapeXml(label)}</text>`);
       }
     }
+
+    // Nodes.
     for (let i = 0; i < n; i++) {
       const cat = this.kinds[this.V.kind[i]];
       const color = this.colors.get(i) || cat.color;
       const x = this.V.posX[i] - this.V.sizeW[i] / 2;
       const y = this.V.posY[i] - this.V.sizeH[i] / 2;
       const w = this.V.sizeW[i], h = this.V.sizeH[i];
+      const sel = this.V.selected[i] !== 0;
+      const borderColor = sel ? '#f0b93a' : color;
+      const borderW = sel ? 2 : 1.4;
       if (cat.shape === 'diamond') {
         const cx = this.V.posX[i], cy = this.V.posY[i];
-        out.push(`<polygon points="${cx},${y} ${x+w},${cy} ${cx},${y+h} ${x},${cy}" fill="#161b27" stroke="${color}" stroke-width="1.4"/>`);
+        out.push(`<polygon points="${cx},${y} ${x+w},${cy} ${cx},${y+h} ${x},${cy}" fill="#161b27" stroke="${borderColor}" stroke-width="${borderW}"/>`);
       } else if (cat.shape === 'ellipse') {
-        out.push(`<ellipse cx="${this.V.posX[i]}" cy="${this.V.posY[i]}" rx="${w/2}" ry="${h/2}" fill="#161b27" stroke="${color}" stroke-width="1.4"/>`);
+        out.push(`<ellipse cx="${this.V.posX[i]}" cy="${this.V.posY[i]}" rx="${w/2}" ry="${h/2}" fill="#161b27" stroke="${borderColor}" stroke-width="${borderW}"/>`);
+      } else if (cat.shape === 'hexagon') {
+        const cx = this.V.posX[i], cy = this.V.posY[i];
+        const hw = w / 2, a = hw * 0.45;
+        out.push(`<polygon points="${cx - hw + a},${y} ${cx + hw - a},${y} ${x + w},${cy} ${cx + hw - a},${y + h} ${cx - hw + a},${y + h} ${x},${cy}" fill="#161b27" stroke="${borderColor}" stroke-width="${borderW}"/>`);
       } else {
-        out.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#161b27" stroke="${color}" stroke-width="1.4"/>`);
-        if (cat.shape === 'rect') out.push(`<rect x="${x}" y="${y}" width="${w}" height="22" rx="8" fill="${color}"/>`);
+        out.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#161b27" stroke="${borderColor}" stroke-width="${borderW}"/>`);
+        if (cat.shape === 'rect') {
+          out.push(`<path d="M ${x + 8} ${y} L ${x + w - 8} ${y} Q ${x + w} ${y} ${x + w} ${y + 8} L ${x + w} ${y + 22} L ${x} ${y + 22} L ${x} ${y + 8} Q ${x} ${y} ${x + 8} ${y} Z" fill="${color}"/>`);
+        }
       }
       const title = this.titles.get(i) || `${cat.name} #${i}`;
-      out.push(`<text x="${this.V.posX[i]}" y="${y + (cat.shape === 'rect' ? 14 : h/2)}" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="${cat.shape === 'rect' ? '#0b0f17' : color}">${escapeXml(title)}</text>`);
+      const titleY = cat.shape === 'rect' ? y + 14 : y + h / 2;
+      const titleFill = cat.shape === 'rect' ? '#0b0f17' : color;
+      out.push(`<text x="${this.V.posX[i]}" y="${titleY}" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="600" text-anchor="middle" fill="${titleFill}" dominant-baseline="middle">${escapeXml(title)}</text>`);
+
+      // Progress bar (bottom strip of rect bodies).
+      const prog = this.progress.get(i);
+      if (prog !== undefined && prog > 0 && cat.shape === 'rect') {
+        const barY = y + h - 5;
+        const barX = x + 8, barW = w - 16, barH = 3;
+        const fillW = barW * Math.min(1, Math.max(0, prog));
+        out.push(`<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" fill="rgba(255,255,255,0.06)"/>`);
+        out.push(`<rect x="${barX}" y="${barY}" width="${fillW}" height="${barH}" fill="${color}"/>`);
+      }
+
+      // Status dot (top-right of header for rect shapes).
+      const st = this.status.get(i);
+      if (st && cat.shape === 'rect') {
+        const sCol = STATUS_COLORS[st] || '#8b95a7';
+        out.push(`<circle cx="${x + w - 12}" cy="${y + 11}" r="3.5" fill="${sCol}"/>`);
+      }
+
+      // Tags.
+      const tags = this.tags.get(i);
+      if (tags && tags.length) {
+        let tx = x + 8;
+        const ty = y + h - 24;
+        const tagFill = alphaize(color, 0.18);
+        for (const tag of tags) {
+          const tw = tag.length * 6 + 12;
+          if (tx + tw > x + w - 8) break;
+          out.push(`<rect x="${tx}" y="${ty}" width="${tw}" height="14" rx="3" fill="${tagFill}"/>`);
+          out.push(`<text x="${tx + tw / 2}" y="${ty + 7}" font-family="Inter, system-ui, sans-serif" font-size="9" text-anchor="middle" fill="${color}" dominant-baseline="middle">${escapeXml(tag)}</text>`);
+          tx += tw + 4;
+        }
+      }
+
+      // Ports (circles on left/right edges).
+      const ni = this.V.nIn[i], no = this.V.nOut[i];
+      for (let p = 0; p < ni; p++) {
+        const py = y + h * ((p + 1) / (ni + 1));
+        out.push(`<circle cx="${x}" cy="${py}" r="4.5" fill="${color}" stroke="#07090f" stroke-width="1.5"/>`);
+      }
+      for (let p = 0; p < no; p++) {
+        const py = y + h * ((p + 1) / (no + 1));
+        out.push(`<circle cx="${x + w}" cy="${py}" r="4.5" fill="${color}" stroke="#07090f" stroke-width="1.5"/>`);
+      }
     }
     out.push('</svg>');
     return out.join('\n');
@@ -2064,7 +2362,7 @@ export class ZFlow {
     return () => { const arr = this.listeners.get(event); const i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1); };
   }
   _emit(event, ...args) {
-    if (this._suspendEvents && event !== 'change') return;
+    if (this._suspendEvents) return;
     const arr = this.listeners.get(event);
     if (!arr) return;
     for (const fn of arr.slice()) try { fn(...args); } catch (e) { console.error(e); }
@@ -2090,6 +2388,18 @@ export class ZFlow {
     return { x: (sx - this.canvas.width / 2) / this.cam.zoom - this.cam.x,
              y: (sy - this.canvas.height / 2) / this.cam.zoom - this.cam.y };
   }
+  /** Public coordinate helpers. Internal `_w2s`/`_s2w` kept as aliases. */
+  worldToScreen(wx, wy) { return this._w2s(wx, wy); }
+  screenToWorld(cx, cy) { return this._s2w(cx, cy); }
+  /** Read-only camera snapshot — preferred over reading `flow.cam` directly. */
+  getCamera() { return { x: this.cam.x, y: this.cam.y, zoom: this.cam.zoom }; }
+  /** Public node geometry accessor. Returns null if id is out of range. */
+  getNodePosition(id) {
+    if (id < 0 || id >= this.w.nodeCount_()) return null;
+    return { x: this.V.posX[id], y: this.V.posY[id], w: this.V.sizeW[id], h: this.V.sizeH[id] };
+  }
+  /** Open the inline title editor for a node. */
+  startEditTitle(id) { if (id >= 0 && id < this.w.nodeCount_()) this._startEditingTitle(id); }
 
   // ── Interactions ──────────────────────────────────────────────────────
   _attachEvents() {
@@ -2548,6 +2858,7 @@ export class ZFlow {
       title: this.titles.get(i), color: this.colors.get(i),
       description: this.descriptions.get(i), tags: this.tags.get(i),
       status: this.status.get(i), progress: this.progress.get(i),
+      data: this.data.get(i),
     }));
     const edges = [];
     for (let e = 0; e < this.w.edgeCount_(); e++) {
@@ -2573,6 +2884,7 @@ export class ZFlow {
         kind: n.kind, x: n.x + dx, y: n.y + dy, w: n.w, h: n.h,
         title: n.title, color: n.color, description: n.description,
         tags: n.tags, status: n.status, progress: n.progress,
+        data: n.data,
       });
       idMap.set(n.origId, id);
       this.w.setSelected(id, 1);
@@ -3904,6 +4216,23 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function escapeXml(s) { return escapeHtml(s); }
+// Rough word-wrap for SVG export. avgCharPx is a coarse estimate (~7 px per
+// char at 12px font) since SVG export has no live metrics to measure against.
+function wrapTextForSvg(text, maxWidth, avgCharPx = 7) {
+  const lines = [];
+  const maxChars = Math.max(4, Math.floor(maxWidth / avgCharPx));
+  for (const para of String(text).split('\n')) {
+    if (para.length <= maxChars) { lines.push(para); continue; }
+    let cur = '';
+    for (const word of para.split(/\s+/)) {
+      const test = cur ? cur + ' ' + word : word;
+      if (test.length > maxChars && cur) { lines.push(cur); cur = word; }
+      else cur = test;
+    }
+    if (cur) lines.push(cur);
+  }
+  return lines;
+}
 
 // ── Mermaid + DOT importers ───────────────────────────────────────────────
 export function parseMermaid(text) {

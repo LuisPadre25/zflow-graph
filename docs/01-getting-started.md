@@ -153,6 +153,31 @@ flow.setNodeTasks(id, [{ text: 'done', done: true }]);
 flow.setNodeImage(id, 'https://...');
 ```
 
+## Load a graph from your own data model
+
+When your app already has `{ nodes, edges }` with string ids — services, components, whatever — use `loadGraph`. It wipes the canvas and inserts everything atomically (one `change` event, one undo snapshot) and resolves edges by your ids:
+
+```js
+flow.loadGraph({
+  nodes: [
+    { id: 'web',     kind: 'process', x: -200, y: 0, title: 'Web' },
+    { id: 'gateway', kind: 'process', x:    0, y: 0, title: 'Gateway' },
+    { id: 'svc',     kind: 'process', x:  200, y: 0, title: 'API',
+      data: { repo: 'github.com/acme/api' } },
+  ],
+  edges: [
+    { from: 'web', to: 'gateway' },
+    { from: 'gateway', to: 'svc' },
+  ],
+});
+
+// Find the zflow numeric id from your domain id later — no side table needed.
+flow.findNodeByUserId('svc');            // → some number
+flow.getNodeData(flow.findNodeByUserId('svc')).repo;   // → 'github.com/acme/api'
+```
+
+The `id` you provide is preserved through `toJSON()` / `loadJSON()` and remote Yjs edits. `data` is a free-form bag attached to every node for whatever metadata you need to round-trip.
+
 ## Listen to events
 
 ```js

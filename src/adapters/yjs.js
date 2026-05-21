@@ -113,18 +113,7 @@ export function bindYjs(flow, ydoc, opts = {}) {
       event.changes.keys.forEach((change, uuid) => {
         if (change.action === 'add')    { addRemoteNode(uuid, ynodes.get(uuid)); }
         if (change.action === 'update') { updateRemoteNode(uuid, ynodes.get(uuid)); }
-        if (change.action === 'delete') {
-          const localId = uuidToLocal.get(uuid);
-          if (localId !== undefined) {
-            flow.w.setSelected(localId, 1);
-            const orig = flow.deleteSelection;
-            flow.deleteSelection = origDelete;            // bypass intercept
-            try { flow.deleteSelection(); }
-            finally { flow.deleteSelection = orig; }
-            localToUuid.delete(localId);
-            uuidToLocal.delete(uuid);
-          }
-        }
+        if (change.action === 'delete') { deleteRemoteNode(uuid); }
       });
     } finally { applyingRemote = false; }
   });
@@ -205,16 +194,47 @@ export function bindYjs(flow, ydoc, opts = {}) {
   function updateRemoteNode(uuid, spec) {
     const localId = uuidToLocal.get(uuid);
     if (localId === undefined) return;
+    let sizeChanged = false;
+    if (spec.w !== undefined) { flow.V.sizeW[localId] = spec.w; sizeChanged = true; }
+    if (spec.h !== undefined) { flow.V.sizeH[localId] = spec.h; sizeChanged = true; }
+    // Route position through moveNode so the WASM spatial grid is invalidated.
+    // If only size changed, re-set the current position to force the same flush.
     if (spec.x !== undefined && spec.y !== undefined) {
-      flow.V.posX[localId] = spec.x; flow.V.posY[localId] = spec.y;
+      flow.w.moveNode(localId, spec.x, spec.y);
+    } else if (sizeChanged) {
+      flow.w.moveNode(localId, flow.V.posX[localId], flow.V.posY[localId]);
     }
-    if (spec.w !== undefined) flow.V.sizeW[localId] = spec.w;
-    if (spec.h !== undefined) flow.V.sizeH[localId] = spec.h;
     if (spec.title) flow.titles.set(localId, spec.title);
     if (spec.color) flow.colors.set(localId, spec.color);
   }
   function deleteRemoteNode(uuid) {
-    void uuid; // single-node delete not yet exposed in core; selection delete works
+    const localId = uuidToLocal.get(uuid);
+    if (localId === undefined) return;
+    // No single-node delete in core: use selection-delete with just this node.
+    const prevSel = [];
+    for (let i = 0; i < flow.w.nodeCount_(); i++) {
+      if (flow.V.selected[i]) prevSel.push(i);
+    }
+    flow.w.clearSelection();
+    flow.w.setSelected(localId, 1);
+    flow.w.deleteSelected();
+    // Local ids may have shifted: rebuild localToUuid/uuidToLocal from scratch
+    // using the previous mapping minus the removed id.
+    const survivors = [];
+    for (const [lid, u] of localToUuid) if (lid !== localId) survivors.push({ oldLid: lid, u });
+    survivors.sort((a, b) => a.oldLid - b.oldLid);
+    localToUuid.clear(); uuidToLocal.clear();
+    for (let newLid = 0; newLid < survivors.length; newLid++) {
+      localToUuid.set(newLid, survivors[newLid].u);
+      uuidToLocal.set(survivors[newLid].u, newLid);
+    }
+    // Restore prior selection (intersected with survivors).
+    flow.w.clearSelection();
+    for (const oldLid of prevSel) {
+      if (oldLid === localId) continue;
+      const newLid = oldLid > localId ? oldLid - 1 : oldLid;
+      if (newLid < flow.w.nodeCount_()) flow.w.setSelected(newLid, 1);
+    }
   }
 }
 
