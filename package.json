@@ -1,6 +1,6 @@
 {
   "name": "@luispm/zflow-graph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "WASM-powered node-edge graph editor + runtime. No framework. 100k nodes at 60fps. Built-in execution engine, Yjs multiplayer, WebGL renderer.",
   "type": "module",
   "main": "./dist/zflow.umd.js",
@@ -95,6 +95,8 @@
     "vitest": "^1.6.0"
   },
   "peerDependenciesMeta": {
-    "yjs": { "optional": true }
+    "yjs": {
+      "optional": true
+    }
   }
 }
